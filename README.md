@@ -14,7 +14,10 @@ WEBCAM -> OpenCV captures each frame
    +-> gesture / movement / trajectory
 ```
 
-<img src="DEMO1output.png" alt="EgoHands demo output" width="320"/>
+<img src="pipeline_demo.jpg" alt="All four stages running on EgoHands frames" width="760"/>
+
+<sub>All four stages on real EgoHands frames: boxes, translucent masks, 21-point
+skeletons with fingertips highlighted, and per-hand id / handedness / gesture / speed.</sub>
 
 ---
 
@@ -222,7 +225,8 @@ without spaces. An unrecognised filter name raises `ValueError` rather than bein
 silently ignored.
 
 Per-frame accessors: `get_frame_path`, `get_bounding_boxes` (4×4 `[x, y, w, h]`, zero
-rows for absent hands), `get_segmentation_mask`. `demo1.py` demonstrates all three.
+rows for absent hands), `get_segmentation_mask` (used by the accuracy tests as
+segmentation ground truth).
 
 ---
 
@@ -461,7 +465,6 @@ get_meta_by.py               query videos by location/activity/viewer/partner
 get_frame_path.py            video + frame index -> JPEG path
 get_bounding_boxes.py        hand boxes
 get_segmentation_mask.py     hand masks
-demo1.py                     dataset demo: frame + mask + boxes
 metadata.mat                 EgoHands annotations (committed)
 
 tests/                       583 tests

@@ -111,8 +111,8 @@ import time
 import cv2
 import numpy as np
 
-# pipeline/ has no __init__.py and is imported as a namespace package, so the
-# relative form works for `import pipeline.segmenter` from the repo root. The absolute
+# pipeline/ is a regular package (it has an __init__.py), so the relative form works
+# for `import pipeline.segmenter` from the repo root. The absolute
 # fallback is for the case where this module has been loaded outside a package context
 # (an ad-hoc importlib load, a notebook) but the repo root is on sys.path. Running the
 # file as a bare script is not supported by either path, and does not need to be --

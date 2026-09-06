@@ -372,13 +372,21 @@ def test_bad_argument_is_not_blamed_on_the_model_file(python_bin, repo, sample_f
 
 
 def test_readme_only_tells_you_to_run_scripts_that_exist(repo):
-    """Every `something.py` the README names has to be a file you can run."""
+    """Every `something.py` the README names has to be a file that exists.
+
+    Searches subpackages, not just the root. The README's project-layout tree lists
+    pipeline/ contents indented under their directory, so the bare filenames it
+    mentions (detector.py, tracker.py, ...) live in a subpackage; a root-only check
+    calls them missing and fails on a perfectly correct README.
+    """
     text = (repo / "README.md").read_text()
     named = sorted(set(re.findall(r"[A-Za-z0-9_]+\.py", text)))
-    missing = [name for name in named if not ((repo / name).exists() or (repo / 'tests' / name).exists())]
+    searched = (repo, repo / "tests", repo / "pipeline")
+    missing = [name for name in named
+               if not any((folder / name).exists() for folder in searched)]
     assert not missing, (
         f"README.md points the reader at scripts that are not in the repo: {missing} "
-        f"(present names use snake_case: get_meta_by.py, visualize_dataset.py, ...)"
+        f"(searched {[str(f.name) or '<root>' for f in searched]})"
     )
 
 
