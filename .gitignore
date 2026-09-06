@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Datasets. Large, re-downloadable, and in one case not ours to redistribute.
+# ---------------------------------------------------------------------------
+
+# EgoHands labelled frames (1.2 GB). Indiana University removed the original
+# download; the Internet Archive still serves it -- see the README.
+_LABELLED_SAMPLES/
+egohands_data.zip
+
+# COCO-Hand, HaGRID, Oxford Hand (6.3 GB). Third-party, each under its own
+# licence. external_datasets.py documents where to get them.
+datasets/
+
+# The original MATLAB toolkit, extracted from the EgoHands archive. Kept locally
+# as the reference our Python accessors were ported from, not ours to publish.
+matlab_original/
+
+# ---------------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ---------------------------------------------------------------------------
+# Model weights
+# ---------------------------------------------------------------------------
+
+# MediaPipe's hand_landmarker.task (7.5 MB) -- Google's file, downloaded on
+# demand by the setup step in the README.
+models/
+
+# Training checkpoints. The best model is committed as an exception below so a
+# fresh clone can run the demo without training first; the intermediate and
+# comparison checkpoints are not worth the history.
+checkpoints/*
+!checkpoints/hand_detector.pth
+*.pth.tar
+
+# ---------------------------------------------------------------------------
+# Generated output -- every one of these is reproducible by a documented command
+# ---------------------------------------------------------------------------
+saved_images/
+evaluation_examples.png
+mp_detect_result.png
+cv_detect_result.png
+cv_detect_mask.png
+annotated_raw.mp4
+annotated.mp4
+*.mp4
+
+# Webcam captures. Personal images; never commit these.
+negatives/
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp

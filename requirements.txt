@@ -1,0 +1,46 @@
+# EgoHands hand detection -- Apple Silicon (arm64), Python 3.11
+#
+#   /opt/homebrew/bin/python3.11 -m venv .venv
+#   .venv/bin/python -m pip install -r requirements.txt
+#
+# Python 3.11 is not arbitrary: PyTorch publishes no wheels for 3.12+ on this stack,
+# and Homebrew's default python3 here is 3.14.
+#
+# THE VERSIONS BELOW ARE PINNED AND INTERLOCKED -- read before "upgrading":
+#
+#   mediapipe 0.10.x requires numpy<2. That single constraint cascades:
+#     * numpy must stay on 1.26.x
+#     * opencv-python 5.x requires numpy>=2, so it CANNOT be used -- we use
+#       opencv-contrib-python 4.11 instead, which mediapipe pulls in anyway
+#   Installing plain `opencv-python` alongside this WILL break mediapipe. The two
+#   opencv distributions also overlay the same cv2/ package directory, so
+#   uninstalling one deletes files the other needs. Pick one; it is contrib.
+#
+#   mediapipe 1.x is NOT usable on macOS as of 1.0.1: it aborts inside
+#   TensorsToDetectionsCalculator::Open() initialising a Metal service
+#   ("Check failed: service_ Service is unavailable"), and forcing the CPU
+#   delegate does not avoid it. 1.x also removed mp.solutions.hands, which most
+#   tutorials still use. Stay on 0.10.x.
+
+# --- core numerics (numpy MUST stay <2 for mediapipe) ---
+numpy==1.26.4
+scipy==1.17.1          # reads metadata.mat
+pandas==3.0.5          # get_meta_by returns a DataFrame
+
+# --- vision ---
+opencv-contrib-python==4.11.0.86   # NOT opencv-python; see note above
+mediapipe==0.10.21                 # webcam_detect_mp.py
+#   NOTE: `pip check` reports "mediapipe 0.10.21 is not supported on this
+#   platform". That is a false alarm -- pip is reading a stale platform tag, not
+#   the binary. PyPI serves macosx_11_0_universal2 for cp311, and the shipped
+#   .so files are Mach-O universal (x86_64 + arm64), so an arm64 interpreter
+#   loads the arm64 slice natively. Verified running at ~52 fps, no Rosetta.
+
+# --- detector training (webcam_detect.py / train_detector.py) ---
+torch==2.13.0          # MPS works on Apple Silicon
+torchvision==0.28.0    # ssdlite320_mobilenet_v3_large
+tqdm==4.70.0
+
+# --- only for the original UNet segmentation pipeline (train.py, demo1.py) ---
+matplotlib==3.11.1
+# albumentations       # uncomment if you revive train.py

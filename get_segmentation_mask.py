@@ -26,22 +26,28 @@ import cv2
 
 
 def get_segmentation_mask(video, i, hand_type):
-    """Retrieves the binary segmentation mask for your query"""
+    """Retrieves the binary segmentation mask for your query.
+
+    Each or-group is parenthesised on purpose. Without the brackets Python reads
+    `a or b or c and d` as `a or b or (c and d)`, so the np.any() presence check
+    guards only the 'all' branch and every other hand_type hands an empty polygon
+    to cv2.fillPoly, which raises. The MATLAB original had the brackets.
+    """
     img_mask = np.zeros([720, 1280, 3], dtype= "uint8")
-    if (hand_type == 'my_left' or hand_type=='mine' or hand_type == 'all'
+    if ((hand_type == 'my_left' or hand_type == 'mine' or hand_type == 'all')
             and np.any(video.loc['labelled_frames'][0][i][1])):
         shape = np.int32(video.loc['labelled_frames'][0][i][1])
         # all make a white mask
         img_mask = cv2.fillPoly(img_mask, pts=[shape], color=(255, 255, 255))
-    if (hand_type == 'my_right' or hand_type=='mine' or hand_type == 'all'
+    if ((hand_type == 'my_right' or hand_type == 'mine' or hand_type == 'all')
             and np.any(video.loc['labelled_frames'][0][i][2])):
         shape = np.int32(video.loc['labelled_frames'][0][i][2])
         img_mask = cv2.fillPoly(img_mask, pts=[shape], color=(255, 255, 255))
-    if (hand_type == 'your_left' or hand_type == 'yours' or hand_type == 'all'
+    if ((hand_type == 'your_left' or hand_type == 'yours' or hand_type == 'all')
             and np.any(video.loc['labelled_frames'][0][i][3])):
         shape = np.int32(video.loc['labelled_frames'][0][i][3])
         img_mask = cv2.fillPoly(img_mask, pts=[shape], color=(255, 255, 255))
-    if (hand_type == 'your_right' or hand_type == 'yours' or hand_type == 'all'
+    if ((hand_type == 'your_right' or hand_type == 'yours' or hand_type == 'all')
             and np.any(video.loc['labelled_frames'][0][i][4])):
         shape = np.int32(video.loc['labelled_frames'][0][i][4])
         img_mask = cv2.fillPoly(img_mask, pts=[shape], color=(255, 255, 255))
