@@ -46,7 +46,10 @@ def parse_args():
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--video", help="replay a video file instead of the camera")
     parser.add_argument("--record", help="write the annotated session to this .mp4")
-    parser.add_argument("--detector", default="mediapipe", choices=["mediapipe", "ssdlite"])
+    parser.add_argument("--detector", default="mediapipe",
+                        choices=["mediapipe", "yolo", "ssdlite"])
+    parser.add_argument("--yolo-weights", default="runs/detect/hands448/weights/best.pt",
+                        help="weights for --detector yolo")
     parser.add_argument("--checkpoint", default="checkpoints/hand_detector.pth")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--max-hands", type=int, default=4)
@@ -75,8 +78,9 @@ def build_stages(args):
     video_mode = True
     shared = MediaPipeHands(args.model, args.max_hands, args.confidence, video_mode)
 
+    checkpoint = args.yolo_weights if args.detector == "yolo" else args.checkpoint
     detector = HandDetector(
-        backend=args.detector, model_path=args.model, checkpoint=args.checkpoint,
+        backend=args.detector, model_path=args.model, checkpoint=checkpoint,
         threshold=args.confidence, max_hands=args.max_hands, shared=shared,
         video_mode=video_mode,
     )

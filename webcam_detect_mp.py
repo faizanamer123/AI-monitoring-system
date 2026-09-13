@@ -26,7 +26,7 @@ almost every tutorial online still uses. This file uses the current Tasks API
 macOS: grant camera access to your terminal in
 System Settings -> Privacy & Security -> Camera, then restart the terminal.
 
-See also webcam_detect.py (EgoHands-trained SSDlite), webcam_detect_cv.py (classical)
+See also webcam_detect.py (EgoHands-trained SSDlite), run_pipeline.py (all stages)
 """
 
 import argparse

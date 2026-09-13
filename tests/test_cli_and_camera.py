@@ -32,7 +32,6 @@ SCRIPTS = [
     "train_detector.py",
     "webcam_detect.py",
     "webcam_detect_mp.py",
-    "webcam_detect_cv.py",
 ]
 
 # a path that cannot exist, for the "missing file" arguments
@@ -140,7 +139,6 @@ def test_help_exits_zero(help_text, script):
         ("train_detector.py", ["--epochs", "--limit-videos", "--eval-only", "--checkpoint"]),
         ("webcam_detect.py", ["--camera", "--threshold", "--device", "--checkpoint"]),
         ("webcam_detect_mp.py", ["--image", "--max-hands", "--landmarks", "--model"]),
-        ("webcam_detect_cv.py", ["--image", "--show-mask", "--min-area", "--max-area"]),
     ],
 )
 def test_help_lists_the_flags_the_docstring_advertises(help_text, script, flags):
@@ -164,7 +162,7 @@ def test_bad_device_is_rejected_by_the_parser(python_bin, repo, script):
     assert "cpu" in proc.stderr and "mps" in proc.stderr
 
 
-@pytest.mark.parametrize("script", ["webcam_detect_mp.py", "webcam_detect_cv.py"])
+@pytest.mark.parametrize("script", ["webcam_detect_mp.py"])
 def test_missing_image_fails_cleanly(python_bin, repo, script):
     proc = run(python_bin, repo, script, "--image", NOPE)
     assert proc.returncode != 0, f"{script} accepted a nonexistent --image"
@@ -202,7 +200,7 @@ def test_missing_mediapipe_model_fails_cleanly(python_bin, repo, sample_frame_pa
     assert "curl" in proc.output, "no download instructions for the missing model"
 
 
-@pytest.mark.parametrize("script", ["webcam_detect_cv.py", "webcam_detect.py"])
+@pytest.mark.parametrize("script", ["webcam_detect.py"])
 def test_unopenable_camera_index_fails_cleanly(python_bin, repo, script):
     """A camera index that does not exist must stop the program with a message,
     not with an OpenCV assertion or an empty-frame loop."""
@@ -278,37 +276,6 @@ def test_zero_epochs_does_not_claim_a_checkpoint_it_never_wrote(python_bin, repo
 
 # ------------------------------------------------------------------- documented runbook
 
-
-@needs_dataset
-def test_cv_still_image_runbook(python_bin, repo, sample_frame_path, repo_output):
-    """python webcam_detect_cv.py --image <frame>  ->  two PNGs in the repo root."""
-    cv2 = pytest.importorskip("cv2")
-    result = repo_output("cv_detect_result.png")
-    mask = repo_output("cv_detect_mask.png")
-
-    proc = run(python_bin, repo, "webcam_detect_cv.py", "--image", str(sample_frame_path))
-    assert proc.returncode == 0, proc.output
-    assert_no_traceback(proc, "webcam_detect_cv.py --image")
-    assert "candidate(s) in" in proc.stdout
-    assert result.is_file() and mask.is_file(), f"promised PNGs missing:\n{proc.output}"
-
-    source = cv2.imread(str(sample_frame_path))
-    drawn = cv2.imread(str(result))
-    assert drawn is not None and drawn.shape == source.shape, "annotated PNG is not the input size"
-    written_mask = cv2.imread(str(mask), cv2.IMREAD_GRAYSCALE)
-    assert written_mask.shape == source.shape[:2]
-    assert set(written_mask.flatten().tolist()) <= {0, 255}, "skin mask is not binary"
-
-    # printed boxes are (x, y, w, h) here -- note the sibling tool prints (x1,y1,x2,y2)
-    height, width = source.shape[:2]
-    boxes = re.findall(r"box \((\d+), (\d+), (\d+), (\d+)\)", proc.stdout)
-    assert boxes, f"no boxes printed for a real hands frame:\n{proc.stdout}"
-    for x, y, w, h in ((int(a), int(b), int(c), int(d)) for a, b, c, d in boxes):
-        assert w > 0 and h > 0
-        assert 0 <= x and x + w <= width, f"box runs off the frame: {(x, y, w, h)}"
-        assert 0 <= y and y + h <= height, f"box runs off the frame: {(x, y, w, h)}"
-
-
 @needs_dataset
 @needs_mp_model
 def test_mp_still_image_runbook(python_bin, repo, sample_frame_path, repo_output):
@@ -338,20 +305,6 @@ def test_mp_still_image_runbook(python_bin, repo, sample_frame_path, repo_output
     for x1, y1, x2, y2 in ((int(a), int(b), int(c), int(d)) for a, b, c, d in boxes):
         assert x1 < x2 and y1 < y2, f"degenerate box {(x1, y1, x2, y2)}"
         assert 0 <= x1 and x2 <= width and 0 <= y1 and y2 <= height, "box outside the frame"
-
-
-@needs_dataset
-def test_image_mode_never_touches_the_camera(python_bin, repo, sample_frame_path, repo_output):
-    """--image is the headless path: it must succeed even when --camera is nonsense."""
-    repo_output("cv_detect_result.png")
-    repo_output("cv_detect_mask.png")
-    proc = run(python_bin, repo, "webcam_detect_cv.py",
-               "--image", str(sample_frame_path), "--camera", BAD_CAMERA)
-    assert proc.returncode == 0, (
-        f"--image opened the camera anyway:\n{proc.output}"
-    )
-    assert "could not open camera" not in proc.output
-
 
 @needs_mp_model
 @needs_dataset
@@ -476,34 +429,6 @@ def test_camera_reports_the_resolution_it_actually_delivers():
     assert set(shapes) == {reported}, (
         f"open_camera() announced {reported} but delivered {set(shapes)}"
     )
-
-
-def test_camera_frame_flows_through_the_classical_detector(camera_capture, monkeypatch):
-    """A live frame must survive the whole webcam_detect_cv pipeline, with every
-    box inside the frame -- no GUI involved."""
-    import webcam_detect_cv as cv_detect
-
-    frame = next((f for f in camera_capture if not blank(f)), None)
-    if frame is None:
-        pytest.skip("camera never produced a non-blank frame")
-
-    monkeypatch.setattr(sys, "argv", ["webcam_detect_cv.py"])
-    args = cv_detect.parse_args()
-
-    detections, mask = cv_detect.detect(frame, args)
-    height, width = frame.shape[:2]
-    assert mask.shape == (height, width)
-    assert len(detections) <= args.max_hands
-    for score, (x, y, w, h), fingers, solidity in detections:
-        assert 0.0 <= score <= 1.0, f"score {score} out of range"
-        assert w > 0 and h > 0
-        assert 0 <= x and x + w <= width and 0 <= y and y + h <= height
-        assert fingers >= 0
-        assert 0.0 < solidity <= 1.0
-
-
-# --------------------------------------------------------------------- import hygiene
-
 
 @pytest.mark.parametrize("script", SCRIPTS)
 def test_main_guard_is_present(repo, script):

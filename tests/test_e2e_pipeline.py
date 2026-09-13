@@ -258,8 +258,8 @@ def test_stage5_predictions_land_on_real_hands():
 
 @needs_dataset
 @needs_checkpoint
-def test_stage6_all_three_detectors_run_on_the_same_frame(sample_frame_path, tmp_path):
-    """The three demos are meant to be interchangeable. Prove they all produce output."""
+def test_stage6_both_detectors_run_on_the_same_frame(sample_frame_path, tmp_path):
+    """The demos are meant to be interchangeable. Prove they all produce output."""
     import cv2
     from train_detector import pick_device
 
@@ -279,11 +279,6 @@ def test_stage6_all_three_detectors_run_on_the_same_frame(sample_frame_path, tmp
         from webcam_detect_mp import build_detector, detect as mp_detect
         det = build_detector(str(MP_MODEL), 4, 0.4, video_mode=False)
         results["mediapipe"] = len(mp_detect(det, frame))
-
-    import argparse
-    from webcam_detect_cv import detect as cv_detect
-    cv_args = argparse.Namespace(min_area=0.004, max_area=0.25, max_hands=4)
-    results["classical"] = len(cv_detect(frame, cv_args)[0])
 
     print(f"\n    detections on {sample_frame_path.name}: {results}")
     assert results["ssdlite"] > 0, "the trained detector found nothing on a real hand frame"

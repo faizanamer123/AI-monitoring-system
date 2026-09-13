@@ -63,3 +63,9 @@ negatives/
 .idea/
 .vscode/
 *.swp
+
+# YOLO export (symlinks + label files, regenerate with export_yolo.py)
+yolo_hands/
+runs/
+*.pt
+detect_hands_output.jpg
