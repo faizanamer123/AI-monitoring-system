@@ -44,7 +44,7 @@ class HandDetector:
         elif backend == "yolo":
             from ultralytics import YOLO
 
-            self.yolo = YOLO(checkpoint or "runs/detect/hands448/weights/best.pt")
+            self.yolo = YOLO(checkpoint or "checkpoints/hand_yolo.pt")
             self.yolo_device = device or "mps"
         elif backend == "ssdlite":
             import torch
@@ -72,13 +72,25 @@ class HandDetector:
         if self.backend == "yolo":
             # verbose=False or ultralytics prints a line per frame, which at 30 fps
             # buries every other message the pipeline emits
+            # agnostic_nms is essential for a multi-class model. Ultralytics offsets
+            # each class into its own coordinate band before NMS, so without it two
+            # boxes of DIFFERENT classes can never suppress each other however much
+            # they overlap -- one hand comes back as palm 0.62 + stop 0.58 +
+            # no_gesture 0.45, three boxes stacked on the same hand.
             result = self.yolo.predict(frame_bgr, conf=self.threshold, verbose=False,
-                                       device=self.yolo_device)[0]
+                                       agnostic_nms=True, device=self.yolo_device)[0]
+            names = getattr(self.yolo, "names", {}) or {}
             out = []
-            for box, score in zip(result.boxes.xyxy.cpu().numpy(),
-                                  result.boxes.conf.cpu().numpy()):
+            for box, score, cls in zip(result.boxes.xyxy.cpu().numpy(),
+                                       result.boxes.conf.cpu().numpy(),
+                                       result.boxes.cls.cpu().numpy()):
+                # The class index is the gesture. Dropping it here -- as this backend
+                # used to -- makes a 19-class model behave exactly like a 1-class one:
+                # it detects hands and silently discards what they are doing.
+                label = str(names.get(int(cls), "hand"))
                 out.append(HandDetection(box=tuple(int(v) for v in box),
-                                         score=float(score), handedness="unknown"))
+                                         score=float(score), handedness="unknown",
+                                         gesture=None if label == "hand" else label))
             out.sort(key=lambda d: -d.score)
             return out[: self.max_hands]
 

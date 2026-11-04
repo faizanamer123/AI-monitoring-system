@@ -51,17 +51,20 @@ Point it at your webcam and it will, per frame:
 Measured on an Apple M1 Pro: **~29 fps end-to-end**, ~50 fps for the stages alone
 (the rest is camera I/O, which caps at 15-30 fps depending on lighting).
 
-There are **three interchangeable detectors**. Which one you want depends on the footage:
+There are **three interchangeable detectors**:
 
-| Detector | Use it for | Speed | Needs |
-| --- | --- | --- | --- |
-| **MediaPipe** (default) | webcams, anything front-facing | 52 fps | 7.5 MB model file |
-| **SSDlite** (trained here) | first-person / head-mounted footage | 26 fps | the committed checkpoint |
-| **Classical CV** | nothing serious; a no-model baseline | 179 fps | nothing |
+| Detector | Trained on | Speed | Held-out F1 | Weights |
+| --- | --- | --- | --- | --- |
+| **YOLO11n** | EgoHands + COCO-Hand + HaGRID | 55–80 fps | **0.965** | `checkpoints/hand_yolo.pt` (5.4 MB) |
+| **MediaPipe** | Google's own data | 52 fps | 0.673 | downloaded (7.5 MB) |
+| **SSDlite** | EgoHands | 26 fps | 0.924 | `checkpoints/hand_detector.pth` (8.7 MB) |
 
-> **Use MediaPipe on a webcam.** The SSDlite model is genuinely strong on egocentric
-> footage but boxes faces, elbows and feet on a webcam — see [Known issues](#known-issues).
-> `run_pipeline.py` already defaults to MediaPipe.
+> **Just want boxes around hands?** Run `detect_hands.py`: YOLO, boxes and confidence
+> scores, nothing else. `run_pipeline.py` adds segmentation, landmarks and tracking on
+> top, and defaults to MediaPipe because stage 3 needs its landmarks anyway.
+>
+> Avoid SSDlite on a webcam. It boxes faces, elbows and feet; see
+> [Known issues](#known-issues).
 
 ---
 
@@ -83,13 +86,14 @@ curl -L -o models/hand_landmarker.task \
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
 
 # 3. run it
-.venv/bin/python run_pipeline.py
+.venv/bin/python detect_hands.py      # boxes only (YOLO)
+.venv/bin/python run_pipeline.py      # boxes + masks + landmarks + tracking
 ```
 
 A window opens. Hold up a hand. Press **`q`** or **`Esc`** to quit.
 
-**No dataset download is needed to run the demo.** You only need EgoHands if you want to
-retrain or re-evaluate the SSDlite detector.
+**No dataset download and no training are needed to run either demo.** The trained YOLO
+and SSDlite weights are committed. You only need the datasets to retrain or re-evaluate.
 
 **macOS:** the first run asks for camera permission on behalf of your terminal. If no
 prompt appears and frames come back black, grant it under
@@ -156,11 +160,15 @@ Run everything **from the repository root** — `get_frame_path()` resolves path
 ### Live demos
 
 ```bash
-.venv/bin/python run_pipeline.py          # all four stages (recommended)
+.venv/bin/python detect_hands.py          # boxes only, YOLO (simplest)
+.venv/bin/python run_pipeline.py          # all four stages
+.venv/bin/python run_pipeline.py --detector yolo   # all four stages, YOLO boxes
 .venv/bin/python webcam_detect_mp.py      # MediaPipe detection only
 .venv/bin/python webcam_detect.py         # SSDlite detection only
-.venv/bin/python webcam_detect_cv.py      # classical OpenCV, no model
 ```
+
+Flags for `detect_hands.py`: `--conf 0.4` (stricter), `--image FILE`, `--video FILE`,
+`--save out.mp4`, `--camera 1`, `--no-mirror`.
 
 Useful flags for `run_pipeline.py`:
 
@@ -168,14 +176,14 @@ Useful flags for `run_pipeline.py`:
 | --- | --- |
 | `--record out.mp4` | save the annotated session |
 | `--video in.mp4` | replay a file instead of the camera (reproducible tracking) |
-| `--detector ssdlite` | use the trained model instead of MediaPipe |
+| `--detector yolo\|ssdlite` | swap the stage-1 detector (default `mediapipe`) |
 | `--segmentation landmark\|skin\|hybrid\|none` | choose the mask method (default `hybrid`) |
 | `--show mask,skeleton,box,trail,label` | pick overlays |
 | `--max-hands 2` | cap detections |
 | `--no-mirror` | disable the selfie flip |
 | `--headless 20` | run 20 s with no window, print stats (for CI) |
 
-Every `webcam_detect*.py` also accepts `--image FILE` to run on a still.
+`detect_hands.py` and every `webcam_detect*.py` accept `--image FILE` to run on a still.
 
 ### Evaluation
 
@@ -187,6 +195,21 @@ Every `webcam_detect*.py` also accepts `--image FILE` to run on a still.
 ```
 
 ### Training
+
+**YOLO (the current detector):**
+
+```bash
+.venv/bin/python export_yolo.py                   # build yolo_hands/ from all datasets
+.venv/bin/python train_yolo.py                    # 12 epochs at 448 px, ~75 min on M1 Pro
+cp runs/detect/hands448/weights/best.pt checkpoints/hand_yolo.pt   # to make it the default
+```
+
+`export_yolo.py` symlinks images instead of copying them, and splits EgoHands by video
+and HaGRID by `user_id`, so near-duplicate frames and the same person never appear on
+both sides of the split. `--bodyhands` adds BodyHands, and `--two-class` also exports its
+body boxes as a second class.
+
+**SSDlite (earlier detector):**
 
 ```bash
 .venv/bin/python train_detector.py                       # EgoHands only, ~17 min
@@ -241,8 +264,8 @@ this kind of pipeline breaks silently.
 
 ### 1. Detect — `pipeline/detector.py`
 
-Frame in, `HandDetection(box, score, handedness)` out. Backends: `mediapipe` (default)
-or `ssdlite`.
+Frame in, `HandDetection(box, score, handedness)` out. Backends: `mediapipe` (default,
+and the only one that reports handedness), `yolo`, or `ssdlite`.
 
 ### 2. Segment — `pipeline/segmenter.py`
 
@@ -311,7 +334,8 @@ gitignored) holds the JPEGs.
 
 ### Optional third-party sets
 
-Used by `--external`. All verified live; none require a login.
+Used by `export_yolo.py` (YOLO) and `train_detector.py --external` (SSDlite). All
+verified live; none require a login.
 
 | Dataset | Size | Content | Hand scale* |
 | --- | --- | --- | --- |
@@ -340,13 +364,33 @@ unzip -q -n COCO-Hand.zip -d COCO-Hand && unzip -q -n hagrid-30k.zip -d hagrid-3
   over hands its automatic detector missed, so a "hand-free" region there may contain a
   real hand.
 
-`external_datasets.py` handles all three.
+`external_datasets.py` and `export_yolo.py` handle all three.
+
+**BodyHands** (CVPR 2022, 4.9 GB) is also supported but not yet used for training. It
+is the only source that labels **bodies** as well as hands: 20,490 images, 57,890 hand
+boxes and 63,175 body boxes. Download it from
+`http://vision.cs.stonybrook.edu/~supreeth/BodyHands/BodyHands.zip`, unzip it into
+`datasets/bodyhands/`, and pass `--bodyhands` to `export_yolo.py`.
 
 ---
 
 ## Accuracy
 
-### Detector, on 1,200 held-out EgoHands frames
+### YOLO11n (current detector)
+
+On 64 held-out EgoHands frames, all three detectors were scored against the same ground truth:
+
+| Model | Precision | Recall | F1 | IoU |
+| --- | --- | --- | --- | --- |
+| **YOLO11n** | **0.980** | **0.951** | **0.965** | 0.856 |
+| SSDlite | 0.963 | 0.888 | 0.924 | 0.855 |
+| MediaPipe | 0.964 | 0.517 | 0.673 | 0.774 |
+
+On its own mixed validation set (2,905 images from EgoHands, COCO-Hand and HaGRID):
+**mAP50 0.850, mAP50-95 0.580**, precision 0.920, recall 0.761. That set is harder
+than EgoHands alone because COCO photos contain small, distant hands.
+
+### SSDlite, on 1,200 held-out EgoHands frames
 
 The committed checkpoint reports **P 0.968 / R 0.747 / F1 0.843**. The EgoHands-only
 model before third-party data scored:
@@ -441,7 +485,8 @@ H.264 with ffmpeg.
 ## Project layout
 
 ```
-run_pipeline.py              the live demo -- start here
+detect_hands.py              boxes only, YOLO -- simplest demo
+run_pipeline.py              all four stages
 pipeline/
   types.py                   shared dataclasses; the coordinate contract
   mediapipe_hands.py         one MediaPipe runner shared by stages 1 and 3
@@ -454,7 +499,11 @@ pipeline/
 
 webcam_detect.py             standalone demo, trained SSDlite
 webcam_detect_mp.py          standalone demo, MediaPipe
-webcam_detect_cv.py          standalone demo, classical OpenCV
+
+export_yolo.py               build the YOLO dataset from every source
+train_yolo.py                train the YOLO detector
+checkpoints/hand_yolo.pt     trained YOLO11n weights (committed)
+checkpoints/hand_detector.pth  trained SSDlite weights (committed)
 
 train_detector.py            fine-tune SSDlite
 evaluate_detector.py         AP, threshold sweeps, failure analysis
@@ -467,7 +516,7 @@ get_bounding_boxes.py        hand boxes
 get_segmentation_mask.py     hand masks
 metadata.mat                 EgoHands annotations (committed)
 
-tests/                       583 tests
+tests/                       513 tests
 hand_pipeline_colab.ipynb    Colab notebook
 hand_pipeline_colab.zip      upload this alongside it
 ```
@@ -477,7 +526,7 @@ hand_pipeline_colab.zip      upload this alongside it
 ## Testing
 
 ```bash
-MPLBACKEND=Agg .venv/bin/python -m pytest tests/ -q              # all 583
+MPLBACKEND=Agg .venv/bin/python -m pytest tests/ -q              # all 513
 MPLBACKEND=Agg .venv/bin/python -m pytest tests/ -m e2e -v -s    # full pipeline, ~30 s
 MPLBACKEND=Agg .venv/bin/python -m pytest tests/ -m accuracy -v -s  # stage accuracy, ~8 s
 ```
@@ -513,12 +562,17 @@ thousands of people, zoom augmentation to match webcam scale, and raising torchv
 hard-negative mining ratio. Precision rose from 0.961 to 0.978, but the false-positive
 behaviour is **not confirmed fixed**.
 
-**Use MediaPipe on a webcam** (the default). The SSDlite model remains the better choice
-for first-person footage, which is what it was trained for.
+**The YOLO detector was trained to fix this, but the fix is not verified on a webcam.**
+Its training mix adds COCO-Hand and HaGRID, where faces, torsos and feet appear
+unlabelled, and it beats both other detectors on every held-out measurement. The
+decisive test is a face in view with no hands. Every attempt to run it so far caught an
+empty or dark room. To check it yourself, run `detect_hands.py`, sit in frame with your
+hands down, and see whether a box lands on your face.
 
-Smaller items: small hands (<32 px) have 0.152 recall; box localisation is loose above
-IoU 0.80; `webcam_detect_cv.py` detects *skin-coloured blobs*, not hands, so it will box
-your face and sleeves — that's the approach, not a defect.
+Smaller items: SSDlite recall on small hands (<32 px) is 0.152, and box localisation is
+loose above IoU 0.80. Whole-frame skin-colour detection was removed from the project
+because it ranked jacket sleeves above real hands. Skin colour is still used inside a
+detected box, as part of stage 2 segmentation.
 
 ---
 

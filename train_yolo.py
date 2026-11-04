@@ -64,6 +64,11 @@ def main():
         # augmentation aimed squarely at the scale gap
         scale=args.scale,
         mosaic=1.0,          # four images per tile -> many hand sizes per batch
+        # close_mosaic defaults to 10, meaning "turn mosaic off for the last 10
+        # epochs". With epochs<=10 that fires at epoch 0 and mosaic NEVER RUNS -- while
+        # args.yaml still records mosaic: 1.0, so the run's own config says it was on.
+        # Keep it on for all but the final epoch or two.
+        close_mosaic=max(1, min(2, args.epochs - 1)),
         fliplr=0.5,
         flipud=0.0,          # hands are not seen upside down in any of our sources
         degrees=10.0,

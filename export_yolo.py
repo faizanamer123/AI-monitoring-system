@@ -35,6 +35,19 @@ from pathlib import Path
 import numpy as np
 
 
+# HaGRID's 18 gestures, plus the resting hand. Order is fixed and alphabetical so a
+# class index means the same thing across every export and every trained checkpoint --
+# a reordered list would silently relabel an existing model's predictions.
+GESTURES = (
+    "call", "dislike", "fist", "four", "like", "mute", "ok", "one", "palm",
+    "peace", "peace_inverted", "rock", "stop", "stop_inverted", "three", "three2",
+    "two_up", "two_up_inverted",
+)
+NO_GESTURE = "no_gesture"
+GESTURE_CLASSES = GESTURES + (NO_GESTURE,)
+GESTURE_INDEX = {name: i for i, name in enumerate(GESTURE_CLASSES)}
+
+
 def xyxy_to_yolo(box, width, height):
     """xyxy -> normalised centre-x, centre-y, width, height, clipped to the frame.
 
@@ -77,7 +90,7 @@ def egohands_samples():
     return out
 
 
-def coco_hand_samples(root="datasets/COCO-Hand/COCO-Hand-S"):
+def coco_hand_samples(root="datasets/COCO-Hand/COCO-Hand-S", gestures=False):
     """COCO-Hand-S. Columns are xmin,XMAX,ymin,ymax -- not the usual xyxy order."""
     root = Path(root)
     annotations = root / f"{root.name}_annotations.txt"
@@ -99,11 +112,18 @@ def coco_hand_samples(root="datasets/COCO-Hand/COCO-Hand-S"):
     # One group PER IMAGE. These are independent COCO photos with no near-duplicates,
     # so a per-image split is sound -- and grouping them all under one label made the
     # holdout all-or-nothing, dumping 4,534 images into val in a single draw.
+    if gestures:
+        # COCO-Hand has no gesture labels, and its hands are not making any of the 18.
+        # They become no_gesture -- which keeps the property that mattered most about
+        # this dataset: faces, torsos and feet are in frame and stay unlabelled.
+        idx = GESTURE_INDEX[NO_GESTURE]
+        return [(images / name, [(b, idx) for b in boxes], f"coco-{name}")
+                for name, boxes in by_image.items() if (images / name).is_file()]
     return [(images / name, boxes, f"coco-{name}")
             for name, boxes in by_image.items() if (images / name).is_file()]
 
 
-def hagrid_samples(root="datasets/hagrid-30k/hagrid-sample-30k-384p"):
+def hagrid_samples(root="datasets/hagrid-30k/hagrid-sample-30k-384p", gestures=False):
     """HaGRID. Boxes are NORMALISED [x, y, w, h], so they need the image size."""
     import json
 
@@ -125,8 +145,23 @@ def hagrid_samples(root="datasets/hagrid-30k/hagrid-sample-30k-384p"):
                 continue
             # keep no_gesture boxes: that is the person's resting other hand, and
             # dropping it would leave a real hand unlabelled in the frame
-            boxes = [[x, y, x + w, y + h]
-                     for x, y, w, h in (record.get("bboxes") or []) if w > 0 and h > 0]
+            raw = record.get("bboxes") or []
+            labels = record.get("labels") or []
+            if gestures:
+                # labels is index-aligned with bboxes, so each hand carries its own
+                # gesture. A two-hand frame is typically ["call", "no_gesture"] -- the
+                # resting hand MUST be kept and labelled, or the model learns that a
+                # real hand is background.
+                boxes = []
+                for i, (x, y, w, h) in enumerate(raw):
+                    if w <= 0 or h <= 0:
+                        continue
+                    name = labels[i] if i < len(labels) else NO_GESTURE
+                    boxes.append(([x, y, x + w, y + h],
+                                  GESTURE_INDEX.get(name, GESTURE_INDEX[NO_GESTURE])))
+            else:
+                boxes = [[x, y, x + w, y + h]
+                         for x, y, w, h in raw if w > 0 and h > 0]
             if boxes:
                 # Group by user_id, not by gesture folder: the same person appears
                 # across many gestures, so a gesture split would put the same face on
@@ -202,6 +237,11 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--skip", nargs="*", default=[],
                         choices=["egohands", "coco", "hagrid", "bodyhands"])
+    parser.add_argument("--gestures", action="store_true",
+                        help="export HaGRID's 18 gesture classes plus no_gesture (19 "
+                             "classes) instead of a single `hand` class. COCO-Hand and "
+                             "EgoHands hands become no_gesture, which keeps their "
+                             "unlabelled faces and bodies as negative signal")
     parser.add_argument("--bodyhands", action="store_true",
                         help="include BodyHands (20,490 images labelling hands AND bodies)")
     parser.add_argument("--two-class", action="store_true",
@@ -213,11 +253,16 @@ def main():
 
     sources = []
     if "egohands" not in args.skip:
-        sources += [(p, b, g, False) for p, b, g in egohands_samples()]
+        ego = egohands_samples()
+        if args.gestures:
+            # EgoHands hands are manipulating objects, not making any of the 18 gestures
+            idx = GESTURE_INDEX[NO_GESTURE]
+            ego = [(p, [(b, idx) for b in bx], g) for p, bx, g in ego]
+        sources += [(p, b, g, False) for p, b, g in ego]
     if "coco" not in args.skip:
-        sources += [(p, b, g, False) for p, b, g in coco_hand_samples()]
+        sources += [(p, b, g, False) for p, b, g in coco_hand_samples(gestures=args.gestures)]
     if "hagrid" not in args.skip:
-        hag = hagrid_samples()
+        hag = hagrid_samples(gestures=args.gestures)
         if args.hagrid_limit and len(hag) > args.hagrid_limit:
             hag = random.Random(args.seed).sample(hag, args.hagrid_limit)
         sources += hag
@@ -286,8 +331,23 @@ def main():
         f"path: {out.resolve()}\n"
         f"train: images/train\n"
         f"val: images/val\n"
-        + (f"nc: 2\nnames: [hand, body]\n" if args.two_class else f"nc: 1\nnames: [hand]\n")
+        + (f"nc: {len(GESTURE_CLASSES)}\nnames: [{', '.join(GESTURE_CLASSES)}]\n"
+           if args.gestures else
+           f"nc: 2\nnames: [hand, body]\n" if args.two_class else
+           f"nc: 1\nnames: [hand]\n")
     )
+
+    if args.gestures:
+        import collections
+        hist = collections.Counter()
+        for _, bx, _, _ in sources:
+            for entry in bx:
+                if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[1], int):
+                    hist[GESTURE_CLASSES[entry[1]]] += 1
+        print("class histogram (boxes):")
+        for name, n in hist.most_common():
+            print(f"  {name:<18} {n:>6}")
+        print()
 
     print(f"sources            {len(sources)}")
     print(f"groups             {len(groups)}  ({len(val_groups)} held out for val)")

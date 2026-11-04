@@ -24,7 +24,7 @@ from collections import deque
 
 import cv2
 
-DEFAULT_WEIGHTS = "runs/detect/hands448/weights/best.pt"
+DEFAULT_WEIGHTS = "checkpoints/hand_yolo.pt"
 BOX_COLOR = (0, 220, 0)
 
 
@@ -66,22 +66,29 @@ def load(weights, device):
 def detect(model, frame, conf, max_hands, device):
     """Frame in, list of (x1, y1, x2, y2, score) out. That is the whole detector."""
     # verbose=False, or ultralytics prints a line for every frame
-    result = model.predict(frame, conf=conf, verbose=False, device=device)[0]
+    # agnostic_nms matters once the model has more than one class: ultralytics puts
+    # each class in its own NMS coordinate band, so without it the same hand returns
+    # once per plausible class instead of once.
+    result = model.predict(frame, conf=conf, verbose=False, agnostic_nms=True,
+                           device=device)[0]
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
         return []
+    names = getattr(model, "names", {}) or {}
     out = [
-        (int(x1), int(y1), int(x2), int(y2), float(s))
-        for (x1, y1, x2, y2), s in zip(boxes.xyxy.cpu().numpy(), boxes.conf.cpu().numpy())
+        (int(x1), int(y1), int(x2), int(y2), float(s), str(names.get(int(c), "hand")))
+        for (x1, y1, x2, y2), s, c in zip(boxes.xyxy.cpu().numpy(),
+                                          boxes.conf.cpu().numpy(),
+                                          boxes.cls.cpu().numpy())
     ]
     out.sort(key=lambda b: -b[4])
     return out[:max_hands]
 
 
 def draw(frame, hands, fps=None):
-    for x1, y1, x2, y2, score in hands:
+    for x1, y1, x2, y2, score, name in hands:
         cv2.rectangle(frame, (x1, y1), (x2, y2), BOX_COLOR, 2)
-        label = f"hand {score:.2f}"
+        label = f"{name} {score:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
         # filled strip behind the text, so it stays readable over a busy background
         cv2.rectangle(frame, (x1, y1 - th - 8), (x1 + tw + 6, y1), BOX_COLOR, -1)
@@ -106,8 +113,8 @@ def main():
             raise SystemExit(f"could not read {args.image}")
         hands = detect(model, frame, args.conf, args.max_hands, args.device)
         print(f"{len(hands)} hand(s) in {args.image}")
-        for x1, y1, x2, y2, score in hands:
-            print(f"  box ({x1}, {y1}, {x2}, {y2})  confidence {score:.2f}")
+        for x1, y1, x2, y2, score, name in hands:
+            print(f"  {name:<16} {score:.2f}  box ({x1}, {y1}, {x2}, {y2})")
         out = args.save or "detect_hands_output.jpg"
         cv2.imwrite(out, draw(frame, hands))
         print(f"wrote {out}")

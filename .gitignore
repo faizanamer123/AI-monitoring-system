@@ -39,6 +39,7 @@ models/
 # comparison checkpoints are not worth the history.
 checkpoints/*
 !checkpoints/hand_detector.pth
+!checkpoints/hand_yolo.pt
 *.pth.tar
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,9 @@ negatives/
 
 # YOLO export (symlinks + label files, regenerate with export_yolo.py)
 yolo_hands/
+yolo_gestures/
 runs/
 *.pt
+!checkpoints/hand_yolo.pt
 detect_hands_output.jpg
+!checkpoints/hand_gestures.pt

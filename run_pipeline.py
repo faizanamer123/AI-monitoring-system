@@ -48,7 +48,7 @@ def parse_args():
     parser.add_argument("--record", help="write the annotated session to this .mp4")
     parser.add_argument("--detector", default="mediapipe",
                         choices=["mediapipe", "yolo", "ssdlite"])
-    parser.add_argument("--yolo-weights", default="runs/detect/hands448/weights/best.pt",
+    parser.add_argument("--yolo-weights", default="checkpoints/hand_yolo.pt",
                         help="weights for --detector yolo")
     parser.add_argument("--checkpoint", default="checkpoints/hand_detector.pth")
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -145,7 +145,17 @@ def main():
             tracks = tracker.update(detections, poses, masks, timestamp=now) # 4
 
             for track in tracks:
-                if track.pose is not None:
+                # Two gesture vocabularies exist and they disagree. A multi-class
+                # detector (checkpoints/hand_gestures.pt) names one of HaGRID's 18 with
+                # a real confidence; pipeline/gestures.py infers one of six from the
+                # landmark geometry. The trained one wins where it exists -- it was
+                # measured at mAP50 0.988, the geometric one is a rule of thumb -- and
+                # the geometric one still covers every single-class detector, which
+                # reports position only.
+                if track.detection.gesture:
+                    track.gesture = track.detection.gesture
+                    track.gesture_confidence = track.detection.score
+                elif track.pose is not None:
                     track.gesture, track.gesture_confidence = classify(track.pose, track.detection)
 
             recent.append(time.perf_counter() - tick)

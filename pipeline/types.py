@@ -46,6 +46,9 @@ class HandDetection:
     box: tuple                      # (x1, y1, x2, y2) ints, full-frame pixels
     score: float
     handedness: str = "unknown"     # "Left" | "Right" | "unknown"
+    gesture: str = None             # set only by a multi-class detector; None means
+                                    # the detector reports position but not what the
+                                    # hand is doing
 
     @property
     def center(self):
