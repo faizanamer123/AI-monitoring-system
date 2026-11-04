@@ -73,3 +73,4 @@ runs/
 !checkpoints/hand_yolo.pt
 detect_hands_output.jpg
 !checkpoints/hand_gestures.pt
+!checkpoints/hand_gestures_unfinished.pt
