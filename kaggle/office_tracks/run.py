@@ -27,6 +27,11 @@ DATA = Path("/kaggle/temp/mm-office")
 OUT = Path("/kaggle/working")
 
 
+# child processes inherit this: their progress lines reach the Kaggle log as they are
+# printed instead of in 8 KB bursts
+os.environ["PYTHONUNBUFFERED"] = "1"
+
+
 def sh(cmd):
     print(f"$ {cmd}", flush=True)
     subprocess.run(cmd, shell=True, check=True)

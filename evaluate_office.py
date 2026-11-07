@@ -185,9 +185,10 @@ def score(args):
         truth = ground_truth(recid, args.labels)
         pooled = []
         for cam in CAMERAS:
-            if (recid, cam) not in rows:
-                continue
-            dets = detections(rows[(recid, cam)])
+            # A camera with no rows produced no events -- every labelled event is a
+            # miss for it. Skipping it instead silently dropped those misses and
+            # flattered the weakest cameras.
+            dets = detections(rows.get((recid, cam), []))
             pooled += dets
             add(per_camera[cam], match(merge(dets, args.collar), truth, args.collar))
         add(fused, match(merge(pooled, args.collar), truth, args.collar))

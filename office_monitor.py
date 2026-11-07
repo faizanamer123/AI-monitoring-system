@@ -184,8 +184,10 @@ def run_source(source, name, args, store, out):
     events = rules.finish()
     elapsed = time.perf_counter() - started
     people = len({e.person for e in events})
+    # flush: under a job runner stdout is block-buffered, and a two-hour run printed
+    # nothing for its first hour
     print(f"{name}: {processed} frames in {elapsed:.0f}s ({processed / max(elapsed, 1e-6):.1f} fps), "
-          f"{people} people, {len(events)} events")
+          f"{people} people, {len(events)} events", flush=True)
     return events
 
 
