@@ -321,7 +321,14 @@ def main():
         stem = f"{group}_{index:06d}".replace("/", "_")
         link = out / "images" / split / f"{stem}{path.suffix}"
         if not link.exists():
-            link.symlink_to(path.resolve())
+            try:
+                link.symlink_to(path.resolve())
+            except OSError:
+                # Windows refuses symlinks without admin rights or Developer Mode;
+                # a copy costs disk space but produces the same dataset
+                import shutil
+
+                shutil.copy2(path, link)
         (out / "labels" / split / f"{stem}.txt").write_text("\n".join(lines) + "\n")
         counts[split] += 1
         boxes_written += len(lines)

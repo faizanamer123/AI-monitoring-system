@@ -1,0 +1,13 @@
+{
+  "id": "waqasshoaib07/office-monitor-tracks",
+  "title": "office-monitor-tracks",
+  "code_file": "run.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": []
+}

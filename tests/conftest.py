@@ -32,7 +32,9 @@ def repo():
 @pytest.fixture(scope="session")
 def python_bin():
     """The venv interpreter, for tests that shell out to a CLI entry point."""
-    return str(REPO / ".venv" / "bin" / "python")
+    # Windows venvs put the interpreter in Scripts\python.exe, not bin/python
+    windows = REPO / ".venv" / "Scripts" / "python.exe"
+    return str(windows if windows.is_file() else REPO / ".venv" / "bin" / "python")
 
 
 @pytest.fixture(scope="session")

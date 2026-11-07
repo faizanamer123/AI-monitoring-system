@@ -35,9 +35,12 @@ def parse_args():
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--image", help="run on one image instead of the camera")
     parser.add_argument("--video", help="run on a video file instead of the camera")
+    parser.add_argument("--folder", help="run on every image under this folder (recursive)")
+    parser.add_argument("--out", default="detect_hands_results",
+                        help="with --folder: where annotated images and detections.csv go")
     parser.add_argument("--conf", type=float, default=0.3, help="confidence threshold")
     parser.add_argument("--max-hands", type=int, default=4)
-    parser.add_argument("--device", default="mps", choices=["mps", "cpu", "cuda"])
+    parser.add_argument("--device", default="auto", choices=["auto", "mps", "cpu", "cuda"])
     parser.add_argument("--no-mirror", action="store_true")
     parser.add_argument("--save", help="write the annotated output here")
     parser.add_argument("--headless", type=float, default=None, metavar="SECONDS",
@@ -46,6 +49,23 @@ def parse_args():
     if not 0.0 <= args.conf <= 1.0:
         parser.error(f"--conf must be in [0, 1], got {args.conf}")
     return args
+
+
+def yolo_device(requested="auto"):
+    """Resolve 'auto' to what this machine has, spelled the way ultralytics wants it.
+
+    Ultralytics takes "0" for the first GPU, not "cuda" -- it would treat "cuda" as a
+    device index and fail.
+    """
+    import torch
+
+    if requested == "auto":
+        if torch.cuda.is_available():
+            return "0"
+        if torch.backends.mps.is_available():
+            return "mps"
+        return "cpu"
+    return "0" if requested == "cuda" else requested
 
 
 def load(weights, device):
@@ -103,9 +123,57 @@ def draw(frame, hands, fps=None):
     return frame
 
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+def run_folder(model, args):
+    """Every image under --folder -> annotated copy + one CSV row per detected hand."""
+    import csv
+    from pathlib import Path
+
+    root, out = Path(args.folder), Path(args.out)
+    images = sorted(p for p in root.rglob("*") if p.suffix.lower() in IMAGE_SUFFIXES)
+    if not images:
+        raise SystemExit(f"no images found under {root}")
+
+    total_hands = unreadable = 0
+    started = time.perf_counter()
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / "detections.csv", "w", newline="") as f:
+        rows = csv.writer(f)
+        rows.writerow(["image", "x1", "y1", "x2", "y2", "confidence"])
+        for n, path in enumerate(images, 1):
+            frame = cv2.imread(str(path))
+            if frame is None:
+                unreadable += 1
+                continue
+            hands = detect(model, frame, args.conf, args.max_hands, args.device)
+            relative = path.relative_to(root)
+            for hand in hands:
+                rows.writerow([relative.as_posix(), *hand[:4], f"{hand[4]:.4f}"])
+            total_hands += len(hands)
+            # keep the folder structure, so same-named files in subfolders don't collide
+            target = out / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(target), draw(frame, hands))
+            if n % 50 == 0 or n == len(images):
+                print(f"  {n}/{len(images)} images, {total_hands} hands so far")
+
+    elapsed = time.perf_counter() - started
+    print(f"\n{len(images) - unreadable} images, {total_hands} hands, {elapsed:.1f}s")
+    if unreadable:
+        print(f"skipped {unreadable} unreadable image(s)")
+    print(f"wrote {out}/ (annotated images + detections.csv)")
+
+
 def main():
     args = parse_args()
+    args.device = yolo_device(args.device)
     model = load(args.weights, args.device)
+
+    if args.folder:
+        run_folder(model, args)
+        return
 
     if args.image:
         frame = cv2.imread(args.image)

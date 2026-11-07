@@ -44,8 +44,10 @@ class HandDetector:
         elif backend == "yolo":
             from ultralytics import YOLO
 
+            from detect_hands import yolo_device
+
             self.yolo = YOLO(checkpoint or "checkpoints/hand_yolo.pt")
-            self.yolo_device = device or "mps"
+            self.yolo_device = yolo_device(device or "auto")
         elif backend == "ssdlite":
             import torch
             from train_detector import build_model, pick_device

@@ -35,7 +35,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=12)
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=16)
-    parser.add_argument("--device", default="mps")
+    parser.add_argument("--device", default="auto", help="auto, cpu, mps, cuda or a GPU index")
     parser.add_argument("--name", default="hands")
     parser.add_argument("--scale", type=float, default=0.9,
                         help="zoom jitter (ultralytics default 0.5). Raised because our "
@@ -51,6 +51,10 @@ def parse_args():
 def main():
     args = parse_args()
     from ultralytics import YOLO
+
+    from detect_hands import yolo_device
+
+    args.device = yolo_device(args.device)
 
     model = YOLO(args.model)
     model.train(

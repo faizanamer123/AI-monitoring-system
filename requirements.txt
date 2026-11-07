@@ -41,6 +41,15 @@ torch==2.13.0          # MPS works on Apple Silicon
 torchvision==0.28.0    # ssdlite320_mobilenet_v3_large
 tqdm==4.70.0
 
+# --- YOLO detector (detect_hands.py / train_yolo.py / --detector yolo) ---
+# NOT installed from this file: ultralytics depends on opencv-python, which would
+# clobber opencv-contrib-python (see above). Install it separately, without deps:
+#   pip install ultralytics --no-deps
+#   pip install pillow pyyaml requests psutil polars ultralytics-thop nvidia-ml-py ultralytics-platform lap
+# (lap is ByteTrack's assignment solver, needed by office_monitor.py's person tracking)
+# `pip check` then complains that opencv-python is missing -- expected, contrib
+# provides the same cv2 module.
+
 # --- only for the original UNet segmentation pipeline (train.py, demo1.py) ---
 matplotlib==3.11.1
 # albumentations       # uncomment if you revive train.py

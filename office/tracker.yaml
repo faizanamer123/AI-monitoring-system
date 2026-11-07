@@ -1,0 +1,11 @@
+# ByteTrack, tuned for an office: people sit still for long stretches and are briefly
+# hidden by monitors, chairs and each other. Ultralytics' default keeps a lost track for
+# 30 frames (~2 s at our processing rate); after that a re-found person gets a NEW id and
+# the timeline shows them leaving and a stranger arriving. 90 frames is ~6 s.
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.3     # default 0.25; a little stricter so flickers don't start ids
+track_buffer: 90          # default 30
+match_thresh: 0.8
+fuse_score: True
