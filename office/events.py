@@ -4,9 +4,11 @@ Turn per-frame labels into a timeline of events.
     every frame:   {3: "sitting", 5: "walking"}
     becomes:       P3 appeared 12.0 | P3 sitting 12.0-48.5 | P3 standing 48.5-50.1 | P3 left 61.0
 
-Three event kinds:
+Event kinds:
   appeared   a new person id, instantaneous
-  posture    a stretch of one label, with start, end and duration
+  posture    a stretch of sitting / standing / walking, with start, end and duration
+  activity   a stretch of on_call / using_phone / working, in parallel with posture --
+             "sitting" and "on_call" overlap, which is the point
   left       the id was not seen for `lost_after` seconds; timed at the last sighting
 
 PRIVACY. Only these rows are stored, never frames. The database answers "how long did
@@ -41,8 +43,14 @@ class Event:
 class EventLog:
     """Feed update(t, {track_id: label}) once per processed frame, then close(t)."""
 
-    def __init__(self, source, lost_after=2.0, min_segment=1.0, hold_unknown=3.0):
+    def __init__(self, source, lost_after=2.0, min_segment=1.0, hold_unknown=3.0,
+                 kind="posture", presence=True):
+        """kind names the segments this log writes ("posture", "activity"). One person
+        has one timeline per kind; only one of them should own presence, or every
+        arrival is logged once per kind."""
         self.source = source
+        self.kind = kind
+        self.presence = presence
         self.lost_after = lost_after
         self.min_segment = min_segment
         # A seated person whose knees vanish behind the desk for a moment reads as
@@ -63,7 +71,8 @@ class EventLog:
         for track_id, label in labels.items():
             track = self.tracks.get(track_id)
             if track is None:
-                self.events.append(Event(self.source, track_id, "appeared", "", t, t))
+                if self.presence:
+                    self.events.append(Event(self.source, track_id, "appeared", "", t, t))
                 self.tracks[track_id] = {"label": label, "since": t, "last_seen": t,
                                          "last_known": t}
                 continue
@@ -100,7 +109,7 @@ class EventLog:
         # are flicker the smoothing let through; dropping them keeps the timeline
         # readable at the cost of a second's precision at each boundary.
         if track["label"] != UNKNOWN and end - track["since"] >= self.min_segment:
-            self.events.append(Event(self.source, track_id, "posture", track["label"],
+            self.events.append(Event(self.source, track_id, self.kind, track["label"],
                                      track["since"], end))
 
     @staticmethod
@@ -111,8 +120,9 @@ class EventLog:
     def _drop(self, track_id):
         track = self.tracks.pop(track_id)
         self._close_segment(track_id, track, self._segment_end(track))
-        self.events.append(Event(self.source, track_id, "left", "",
-                                 track["last_seen"], track["last_seen"]))
+        if self.presence:
+            self.events.append(Event(self.source, track_id, "left", "",
+                                     track["last_seen"], track["last_seen"]))
 
     def active(self):
         """{id: (label, seconds in it so far)} for people currently in view."""
@@ -120,10 +130,11 @@ class EventLog:
 
 
 def summarise(events):
-    """{(source, person): {posture: seconds}} -- the "how was time spent" table."""
+    """{(source, person): {label: seconds}} for postures and activities -- the "how was
+    time spent" table. Labels never collide across kinds, so one dict holds both."""
     totals = {}
     for e in events:
-        if e.kind == "posture":
+        if e.kind in ("posture", "activity"):
             person = totals.setdefault((e.source, e.person), {})
             person[e.label] = person.get(e.label, 0.0) + e.duration
     return totals

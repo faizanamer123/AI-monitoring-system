@@ -31,11 +31,14 @@ from pathlib import Path
 
 import cv2
 
+from office.activity import ACTIVITIES, ActivityTracker
 from office.cache import TrackWriter, read_tracks
 from office.events import EventLog, EventStore, summarise
+from office.objects import DEFAULT_WEIGHTS as OBJECT_WEIGHTS
+from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
                                PersonTracker, drop_nested)
-from office.posture import SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
+from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 COLORS = {SITTING: (255, 160, 0), STANDING: (0, 200, 0), WALKING: (0, 140, 255),
@@ -57,6 +60,10 @@ def parse_args():
     parser.add_argument("--save-video", action="store_true", help="also write annotated video")
     parser.add_argument("--show", action="store_true", help="display a live window")
     parser.add_argument("--blur-faces", action="store_true")
+    parser.add_argument("--objects", default="frame", choices=["off", "frame", "person"],
+                        help="object detection for activities: whole frame (720p+ cameras), "
+                             "per-person crops (low-resolution cameras), or off")
+    parser.add_argument("--object-weights", default=OBJECT_WEIGHTS)
     parser.add_argument("--limit", type=int, default=None, help="with a folder: first N videos")
     parser.add_argument("--save-tracks", metavar="DIR",
                         help="also cache the tracker's output per video here")
@@ -91,11 +98,17 @@ def blur_face(frame, person):
         frame[y1:y2, x1:x2] = cv2.GaussianBlur(frame[y1:y2, x1:x2], (k, k), 0)
 
 
-def draw(frame, people, labels, blur):
+def draw(frame, people, labels, activities, things, blur):
+    for thing in things:
+        x1, y1, x2, y2 = thing.box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 255), 1)
+        cv2.putText(frame, thing.name, (x1, max(y1 - 3, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.35,
+                    (0, 220, 255), 1, cv2.LINE_AA)
     for person in people:
         if blur:
             blur_face(frame, person)
         label = labels.get(person.track_id, UNKNOWN)
+        activity = activities.get(person.track_id, UNKNOWN)
         color = COLORS[label]
         kp = person.keypoints
         for a, b in SKELETON:
@@ -104,7 +117,7 @@ def draw(frame, people, labels, blur):
                          color, 1, cv2.LINE_AA)
         x1, y1, x2, y2 = person.box
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        text = f"P{person.track_id} {label}"
+        text = f"P{person.track_id} {label}" + (f" | {activity}" if activity != UNKNOWN else "")
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
         cv2.putText(frame, text, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
@@ -121,6 +134,8 @@ def run_source(source, name, args, store, out):
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     tracker = PersonTracker(args.weights, args.conf, args.imgsz, args.device)
+    objects = (ObjectDetector(args.object_weights, args.objects, device=args.device)
+               if args.objects != "off" else None)
     rules = Rules(name, store)
     cache = TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps) if args.save_tracks else None
     writer = None
@@ -139,13 +154,14 @@ def run_source(source, name, args, store, out):
             t = time.perf_counter() - started if live else (frame_no - 1) / fps
 
             raw = tracker.update(frame, dedupe=False)
+            things = objects.update(frame, drop_nested(raw), t) if objects else []
             if cache is not None:
-                cache.add(t, raw)
-            people, labels = rules.step(t, raw)
+                cache.add(t, raw, things)
+            people, labels, activities = rules.step(t, raw, things)
             processed += 1
 
             if args.save_video or args.show:
-                frame = draw(frame, people, labels, args.blur_faces)
+                frame = draw(frame, people, labels, activities, things, args.blur_faces)
                 if args.save_video:
                     if writer is None:
                         writer = cv2.VideoWriter(str(out / f"{name}.mp4"),
@@ -174,7 +190,7 @@ def run_source(source, name, args, store, out):
 
 
 class Rules:
-    """Everything after the model: duplicate removal, posture, timeline.
+    """Everything after the models: duplicate removal, posture, activity, timelines.
 
     Live runs and cache replays both go through this one class, so identical tracks
     always give identical events -- otherwise a result tuned on the cache would not be
@@ -182,28 +198,35 @@ class Rules:
 
     def __init__(self, name, store):
         self.postures = PostureTracker()
+        self.activities = ActivityTracker()
         self.log = EventLog(name)
+        # presence is the posture log's job; this one only records what people do
+        self.activity_log = EventLog(name, kind="activity", presence=False)
         self.store = store
 
-    def step(self, t, raw_people):
+    def step(self, t, raw_people, things=()):
         people = drop_nested(raw_people)
         labels = {p.track_id: self.postures.update(p, t) for p in people}
+        doing = {p.track_id: self.activities.update(p, labels[p.track_id], things, t)
+                 for p in people}
         self.store.write(self.log.update(t, labels,
                                         {i: self.postures.onset(i) for i in labels}))
+        self.store.write(self.activity_log.update(t, doing))
         for gone in set(self.postures.history) - set(self.log.tracks):
             self.postures.forget(gone)
-        return people, labels
+            self.activities.forget(gone)
+        return people, labels, doing
 
     def finish(self):
-        self.store.write(self.log.close())
-        return self.log.events
+        self.store.write(self.log.close() + self.activity_log.close())
+        return sorted(self.log.events + self.activity_log.events, key=lambda e: e.start)
 
 
 def replay_source(path, store):
     """Rules only, from a cached .npz: no model, no video."""
     rules = Rules(path.stem, store)
-    for t, raw in read_tracks(path):
-        rules.step(t, raw)
+    for t, raw, things in read_tracks(path):
+        rules.step(t, raw, things)
     return rules.finish()
 
 
@@ -257,10 +280,10 @@ def main():
 def write_summary(out, events):
     with open(out / "summary.csv", "w", newline="") as f:
         rows = csv.writer(f)
-        rows.writerow(["source", "person", "sitting_s", "standing_s", "walking_s"])
+        columns = POSTURES + ACTIVITIES
+        rows.writerow(["source", "person", *(f"{c}_s" for c in columns)])
         for (source, person), totals in sorted(summarise(events).items()):
-            rows.writerow([source, person, *(round(totals.get(k, 0.0), 1)
-                                              for k in (SITTING, STANDING, WALKING))])
+            rows.writerow([source, person, *(round(totals.get(c, 0.0), 1) for c in columns)])
     print(f"wrote {out}/ (events.db, events.csv, summary.csv)")
 
 

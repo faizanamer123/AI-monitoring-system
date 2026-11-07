@@ -9,9 +9,12 @@ Run:  python -m pytest tests/test_office.py -v
 import numpy as np
 import pytest
 
+from office.activity import ON_CALL, USING_PHONE, WORKING, classify_activity
+from office.cache import TrackWriter, read_tracks
 from office.events import EventLog, summarise
-from office.perception import (L_HIP, L_KNEE, L_SHOULDER, R_HIP, R_KNEE, R_SHOULDER,
-                               Person, drop_nested)
+from office.objects import Thing
+from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, R_KNEE,
+                               R_SHOULDER, R_WRIST, Person, drop_nested)
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
 
@@ -222,6 +225,81 @@ def test_brief_dropout_does_not_split_a_person():
     log = EventLog("cam", lost_after=2.0)
     run(log, [(0.0, {1: SITTING}), (1.0, {}), (2.0, {1: SITTING}), (3.0, {1: SITTING})])
     assert [e.kind for e in log.events] == ["appeared"]
+
+
+# --- activity: phone and computer -----------------------------------------------------
+
+def with_head_and_wrists(person, head=None, wrists=()):
+    kp = person.keypoints
+    if head is not None:
+        kp[NOSE] = [*head, 0.9]
+    for i, xy in zip((L_WRIST, R_WRIST), wrists):
+        kp[i] = [*xy, 0.9]
+    return person
+
+
+def phone_at(x, y, size=10):
+    return Thing("cell phone", (x - size, y - size, x + size, y + size), 0.8)
+
+
+def test_phone_at_the_head_is_a_call():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(110, 75)])
+    assert classify_activity(person, SITTING, [phone_at(108, 72)]) == ON_CALL
+
+
+def test_phone_at_the_hand_is_using_phone():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(100, 160)])
+    assert classify_activity(person, SITTING, [phone_at(102, 165)]) == USING_PHONE
+
+
+def test_hand_at_the_head_without_a_phone_is_not_a_call():
+    """Scratching your head is not a phone call."""
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(105, 72)])
+    assert classify_activity(person, SITTING, []) == UNKNOWN
+
+
+def test_someone_elses_phone_does_not_count():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(100, 160)])
+    assert classify_activity(person, SITTING, [phone_at(600, 165)]) == UNKNOWN
+
+
+def test_seated_at_a_laptop_is_working():
+    laptop = Thing("laptop", (90, 150, 150, 190), 0.9)
+    assert classify_activity(skeleton(knee_drop=0.1), SITTING, [laptop]) == WORKING
+
+
+def test_standing_by_a_laptop_is_not_working():
+    laptop = Thing("laptop", (90, 150, 150, 190), 0.9)
+    assert classify_activity(skeleton(knee_drop=0.9), STANDING, [laptop]) == UNKNOWN
+
+
+def test_phone_outranks_the_computer():
+    """Texting at your desk is phone time, not work time."""
+    person = with_head_and_wrists(skeleton(knee_drop=0.1), head=(100, 70), wrists=[(100, 160)])
+    laptop = Thing("laptop", (90, 150, 150, 190), 0.9)
+    assert classify_activity(person, SITTING, [laptop, phone_at(102, 165)]) == USING_PHONE
+
+
+def test_activity_runs_in_parallel_with_posture_and_owns_no_presence():
+    log = EventLog("cam", kind="activity", presence=False)
+    run(log, [(float(t), {1: ON_CALL}) for t in range(5)] + [(float(t), {}) for t in range(5, 10)])
+    log.close()
+    assert [(e.kind, e.label) for e in log.events] == [("activity", ON_CALL)]
+
+
+def test_cache_round_trip_keeps_people_and_objects(tmp_path):
+    writer = TrackWriter(tmp_path / "v.npz", fps=30)
+    person = skeleton(knee_drop=0.1)
+    writer.add(0.0, [person], [phone_at(50, 60)])
+    writer.add(0.5, [], [])
+    writer.close()
+    frames = list(read_tracks(tmp_path / "v.npz"))
+    assert [t for t, _, _ in frames] == [0.0, 0.5]
+    (_, people, things), (_, no_people, no_things) = frames
+    # float32 on disk, as the model emits; the synthetic skeleton is float64
+    assert people[0].box == person.box and np.allclose(people[0].keypoints, person.keypoints)
+    assert [(t.name, t.box) for t in things] == [("cell phone", (40, 50, 60, 70))]
+    assert no_people == [] and no_things == []
 
 
 # --- duplicate boxes ------------------------------------------------------------------
