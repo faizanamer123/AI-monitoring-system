@@ -28,7 +28,7 @@ LABELLED = {"person_sits_down": "sit down", "person_stands_up": "stand up",
             "person_talks_on_phone": "on_call", "person_texts_on_phone": "using_phone"}
 MOMENTS = ("sit down", "stand up", "enter", "exit")
 PHONE = ("on_call", "using_phone")
-GROUPS = (("sit down + stand up", ("sit down", "stand up")), ("enter + exit (edge rule)", ("enter", "exit")),
+GROUPS = (("sit down + stand up", ("sit down", "stand up")), ("enter + exit", ("enter", "exit")),
           ("phone (call + texting)", PHONE), ("sit down", ("sit down",)), ("stand up", ("stand up",)),
           ("enter", ("enter",)), ("exit", ("exit",)), ("on_call", ("on_call",)),
           ("using_phone", ("using_phone",)))
