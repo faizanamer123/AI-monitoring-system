@@ -21,7 +21,7 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
 from office.stitch import IdStitcher, touches_edge
-from evaluate_office import merge
+from evaluate_office import intervals, merge
 from office_monitor import Rules
 
 
@@ -474,6 +474,15 @@ def test_nobody_enters_with_edges_off():
     log.update(5.0, {})
     log.update(7.0, {})
     assert not [e for e in log.events if e.kind == "change"]
+
+
+def test_interval_brackets_the_score_and_narrows_with_more_recordings():
+    rows = {i: {"sit down": [1, 1, 1]} if i % 2 else {"sit down": [3, 1, 0]} for i in range(10)}
+    (low, high), _, _ = intervals(rows, ("sit down",), samples=500)
+    assert low <= 0.667 <= high
+    many = {i: rows[i % 10] for i in range(200)}
+    (low2, high2), _, _ = intervals(many, ("sit down",), samples=500)
+    assert high2 - low2 < high - low
 
 
 def test_two_cameras_must_agree_when_asked():

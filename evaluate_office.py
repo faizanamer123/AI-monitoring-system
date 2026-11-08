@@ -17,10 +17,9 @@ MATCHING. A detection is correct if it falls inside a labelled event of the same
 widened by --collar seconds either side (default 2). Each labelled event can be matched
 once; extra detections are false positives. Precision, recall and F1 per class.
 
-CAMERAS. Each recording was filmed by four cameras with ONE set of labels. Scored two
-ways: per camera, and fused -- detections from all four pooled, and same-class
-detections within --collar of each other merged, so four cameras seeing one sit-down
-count once.
+CAMERAS. Each recording was filmed by four cameras with one set of labels. The product
+is one camera per room, so each camera is judged alone, then the four are pooled: a
+recording counts four times, once per viewpoint.
 
 THE SPLIT. 22 recordings are for tuning rules, 66 are held out for the final number.
 Adjusting thresholds while looking at the final split would inflate the result, so the
@@ -39,6 +38,10 @@ VIDEOS = Path("../mm-office/MM_Office_Dataset/video/test")
 CLASSES = {8: "enter", 9: "exit", 10: "stand up", 11: "sit down"}
 SOURCE =re.compile(r"(?P<split>split\d+)_(?P<camera>id\d+)_s(?P<scene>\d+)_recid(?P<recid>\d+)")
 CAMERAS = ("id00", "id01", "id02", "id03")
+GROUPS = (("sit down + stand up", ("sit down", "stand up")),
+          ("enter + exit (edge rule)", ("enter", "exit")),
+          ("sit down", ("sit down",)), ("stand up", ("stand up",)),
+          ("enter", ("enter",)), ("exit", ("exit",)))
 TUNING_COUNT = 22
 SEED = 0
 # Recordings already watched while writing the posture rules. They go in tuning by
@@ -132,8 +135,8 @@ def write_report(path, rows):
     """One line per labelled event and per false alarm, for checking against the video."""
     with open(path, "w", newline="") as f:
         out = csv.writer(f)
-        out.writerow(["recording", "event", "result", "label_start_s", "label_end_s",
-                      "detected_at_s", "cameras_that_saw_something"])
+        out.writerow(["recording", "camera", "event", "result", "label_start_s", "label_end_s",
+                      "detected_at_s"])
         out.writerows(rows)
 
 
@@ -163,6 +166,23 @@ def add(into, counts):
         into[cls] = [a + b for a, b in zip(into.get(cls, [0, 0, 0]), (tp, fp, fn))]
 
 
+def intervals(by_recording, classes, samples=2000, seed=0):
+    """95% ranges for precision, recall and F1, resampling whole recordings: events
+    within one recording share the same people and room, so they are not independent."""
+    recids = sorted(by_recording)
+    rng = random.Random(seed)
+    results = []
+    for _ in range(samples):
+        tp = fp = fn = 0
+        for recid in rng.choices(recids, k=len(recids)):
+            for cls in classes:
+                a, b, c = by_recording[recid].get(cls, [0, 0, 0])
+                tp, fp, fn = tp + a, fp + b, fn + c
+        results.append(prf(tp, fp, fn))
+    low, high = int(samples * 0.025), int(samples * 0.975)
+    return [(sorted(v)[low], sorted(v)[high]) for v in zip(*results)]
+
+
 def score(args):
     wanted = set(split(args.split, args.labels))
     rows = defaultdict(list)          # (recid, camera) -> rows
@@ -184,38 +204,39 @@ def score(args):
     missing = len(wanted) - len(seen)
 
     per_camera = {cam: {} for cam in CAMERAS}
-    fused, agreed = {}, {}
-    report = []
+    pooled, by_recording, report = {}, {}, []
     for recid in seen:
         truth = ground_truth(recid, args.labels)
-        pooled = []
+        by_recording[recid] = {}
         for cam in CAMERAS:
             # A camera with no rows produced no events -- every labelled event is a
             # miss for it. Skipping it instead silently dropped those misses and
             # flattered the weakest cameras.
-            dets = detections(rows.get((recid, cam), []))
-            pooled += [(cls, t, cam) for cls, t in dets]
-            add(per_camera[cam], match(merge(dets, args.collar), truth, args.collar))
-        add(fused, match(merge(pooled, args.collar), truth, args.collar))
-        outcomes = []
-        add(agreed, match(merge(pooled, args.collar, min_cameras=2), truth, args.collar, outcomes))
-        for cls, result, start, end, when in outcomes:
-            low, high = (start - args.collar, end + args.collar) if result != "false alarm" else (
-                when - args.collar, when + args.collar)
-            seen_by = sorted({c for k, t, c in pooled if k == cls and low <= t <= high})
-            report.append((f"recid{recid:03d}", cls, result, start, end,
-                           "" if when == "" else round(when, 1), " ".join(seen_by)))
+            outcomes = []
+            counts = match(merge(detections(rows.get((recid, cam), [])), args.collar),
+                           truth, args.collar, outcomes)
+            add(per_camera[cam], counts)
+            add(pooled, counts)
+            add(by_recording[recid], counts)
+            report += [(f"recid{recid:03d}", cam, cls, result, start, end,
+                        "" if when == "" else round(when, 1))
+                       for cls, result, start, end, when in outcomes]
 
     if args.report:
-        write_report(args.report, sorted(report, key=lambda r: (r[0], r[2], r[1])))
+        write_report(args.report, sorted(report, key=lambda r: (r[0], r[1], r[3], r[2])))
     print(f"{args.split} split: {len(seen)} recordings scored"
           + (f" ({missing} not in the events file)" if missing else "")
-          + f", collar +-{args.collar:g} s")
-    table("FUSED (any of the four cameras)", fused)
-    table("FUSED (at least two cameras agree)", agreed)
+          + f", collar +-{args.collar:g} s, each camera judged alone")
+    table("ALL CAMERAS POOLED", pooled)
+    print("\n95% ranges, resampling recordings:")
+    for title, classes in GROUPS:
+        tp, fp, fn = (sum(pooled.get(c, [0, 0, 0])[i] for c in classes) for i in range(3))
+        p, r, f = prf(tp, fp, fn)
+        (pl, ph), (rl, rh), (fl, fh) = intervals(by_recording, classes)
+        print(f"  {title:<26} precision {p:.3f} ({pl:.3f}-{ph:.3f})  "
+              f"recall {r:.3f} ({rl:.3f}-{rh:.3f})  F1 {f:.3f} ({fl:.3f}-{fh:.3f})")
     for cam in CAMERAS:
-        if per_camera[cam]:
-            table(f"camera {cam}", per_camera[cam])
+        table(f"camera {cam}", per_camera[cam])
 
 
 def videos(args):
@@ -244,8 +265,7 @@ def main():
     s.add_argument("events")
     s.add_argument("--split", default="tuning", choices=["tuning", "final", "all"])
     s.add_argument("--collar", type=float, default=2.0)
-    s.add_argument("--report", help="write every found / missed / false event to this CSV "
-                                    "(two-camera agreement)")
+    s.add_argument("--report", help="write every found / missed / false event to this CSV")
 
     args = parser.parse_args()
     videos(args) if args.cmd == "videos" else score(args)
