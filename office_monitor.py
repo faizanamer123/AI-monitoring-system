@@ -143,6 +143,9 @@ def run_source(source, name, args, store, out):
     if not cap.isOpened():
         raise SystemExit(f"could not open {source!r}")
     live = isinstance(source, int)
+    if live:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
     tracker = PersonTracker(args.weights, args.conf, args.imgsz, args.device)

@@ -146,10 +146,12 @@ def merge(dets, window, min_cameras=1):
     return out
 
 
-def match(dets, truth, collar):
+def match(dets, truth, collar, outcomes=None):
     """-> {class: [tp, fp, fn]}. Each truth event matches at most one detection, and a
-    detection takes the nearest unmatched truth event whose widened window holds it."""
+    detection takes the nearest unmatched truth event whose widened window holds it.
+    outcomes: optional list, receives (class, result, label start, label end, detected)."""
     counts = defaultdict(lambda: [0, 0, 0])
+    log = outcomes.append if outcomes is not None else lambda row: None
     for cls in set(CLASSES.values()):
         events = [(s, e) for c, s, e in truth if c == cls]
         used = [False] * len(events)
@@ -160,10 +162,24 @@ def match(dets, truth, collar):
                 best = min(hits, key=lambda i: abs(t - (events[i][0] + events[i][1]) / 2))
                 used[best] = True
                 counts[cls][0] += 1
+                log((cls, "found", events[best][0], events[best][1], t))
             else:
                 counts[cls][1] += 1
+                log((cls, "false alarm", "", "", t))
         counts[cls][2] += used.count(False)
+        for i, (s, e) in enumerate(events):
+            if not used[i]:
+                log((cls, "missed", s, e, ""))
     return counts
+
+
+def write_report(path, rows):
+    """One line per labelled event and per false alarm, for checking against the video."""
+    with open(path, "w", newline="") as f:
+        out = csv.writer(f)
+        out.writerow(["recording", "event", "result", "label_start_s", "label_end_s",
+                      "detected_at_s", "cameras_that_saw_something"])
+        out.writerows(rows)
 
 
 def prf(tp, fp, fn):
@@ -208,6 +224,7 @@ def score(args):
 
     per_camera = {cam: {} for cam in CAMERAS}
     fused, agreed = {}, {}
+    report = []
     for recid in seen:
         truth = ground_truth(recid, args.labels)
         pooled = []
@@ -219,8 +236,17 @@ def score(args):
             pooled += [(cls, t, cam) for cls, t in dets]
             add(per_camera[cam], match(merge(dets, args.collar), truth, args.collar))
         add(fused, match(merge(pooled, args.collar), truth, args.collar))
-        add(agreed, match(merge(pooled, args.collar, min_cameras=2), truth, args.collar))
+        outcomes = []
+        add(agreed, match(merge(pooled, args.collar, min_cameras=2), truth, args.collar, outcomes))
+        for cls, result, start, end, when in outcomes:
+            low, high = (start - args.collar, end + args.collar) if result != "false alarm" else (
+                when - args.collar, when + args.collar)
+            seen_by = sorted({c for k, t, c in pooled if k == cls and low <= t <= high})
+            report.append((f"recid{recid:03d}", cls, result, start, end,
+                           "" if when == "" else round(when, 1), " ".join(seen_by)))
 
+    if args.report:
+        write_report(args.report, sorted(report, key=lambda r: (r[0], r[2], r[1])))
     print(f"{args.split} split: {len(seen)} recordings scored"
           + (f" ({missing} not in the events file)" if missing else "")
           + f", collar +-{args.collar:g} s")
@@ -257,6 +283,8 @@ def main():
     s.add_argument("events")
     s.add_argument("--split", default="tuning", choices=["tuning", "final", "all"])
     s.add_argument("--collar", type=float, default=2.0)
+    s.add_argument("--report", help="write every found / missed / false event to this CSV "
+                                    "(two-camera agreement)")
     s.add_argument("--hold", type=float, default=0.0,
                    help="a posture must last this long to count as a change")
     s.add_argument("--edge-only", action="store_true",
