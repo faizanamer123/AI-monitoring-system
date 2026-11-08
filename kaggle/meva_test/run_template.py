@@ -17,6 +17,8 @@ from pathlib import Path
 
 CODE_B64 = "@@CODE@@"
 CLIPS_PER_CAMERA = @@CLIPS@@
+REMAINDER = @@REMAINDER@@      # True: every clip NOT in the evenly spaced test set
+OBJECTS = "@@OBJECTS@@"
 CAMERAS = ("G421", "G331")
 HIGHLIGHTS = @@HIGHLIGHTS@@
 
@@ -48,7 +50,8 @@ os.chdir(CODE)
 import requests  # noqa: E402
 
 sh(f"git clone -q --filter=blob:none --no-checkout {ANNOTATIONS} {REPO}")
-patterns = "\n".join(f"{SHARED}/kitware*/**/*.{c}.activities.yml" for c in CAMERAS)
+patterns = "\n".join(f"{SHARED}/kitware*/**/*.{c}.{kind}.yml" for c in CAMERAS
+                     for kind in ("activities", "geom", "types"))
 sh(f"git -C {REPO} sparse-checkout init --no-cone")
 (REPO / ".git/info/sparse-checkout").write_text(patterns + "\n")
 sh(f"git -C {REPO} checkout -q HEAD")
@@ -79,7 +82,8 @@ for camera in CAMERAS:
     clips = sorted(c for c in labelled if c.endswith(f".{camera}") and f"{c}.r13.avi" in keys)
     print(f"{camera}: {len(clips)} labelled clips have video", flush=True)
     # spaced evenly through the recording days, never chosen by how many events they hold
-    chosen += [clips[i * len(clips) // CLIPS_PER_CAMERA] for i in range(CLIPS_PER_CAMERA)]
+    test_set = [clips[i * len(clips) // CLIPS_PER_CAMERA] for i in range(CLIPS_PER_CAMERA)]
+    chosen += [c for c in clips if c not in test_set] if REMAINDER else test_set
 
 paths = []
 for number, clip in enumerate(chosen, 1):
@@ -102,10 +106,20 @@ for number, clip in enumerate(chosen, 1):
     shutil.copy(labelled[clip], LABELS / f"{clip}.activities.yml")
     print(f"downloaded {number}/{len(chosen)} ({time.time() - started:.0f}s)", flush=True)
 
+# every clip's label files, including the test set's, travel with the output
+for clip, path in labelled.items():
+    for kind in ("activities", "geom", "types"):
+        source = path.with_name(f"{clip}.{kind}.yml")
+        if source.is_file():
+            shutil.copy(source, LABELS / source.name)
+
 listing = WORK / "videos.txt"
 listing.write_text("\n".join(map(str, paths)) + "\n")
-sh(f"python office_monitor.py --video {listing} --weights yolo11n-pose.pt --objects person "
+sh(f"python office_monitor.py --video {listing} --weights yolo11n-pose.pt --objects {OBJECTS} "
    f"--save-tracks {OUT / 'tracks'} --out {OUT / 'run'}")
+if REMAINDER:
+    print(f"done in {(time.time() - started) / 60:.0f} min", flush=True)
+    sys.exit(0)
 
 report = subprocess.run(["python", "evaluate_meva.py", str(OUT / "run" / "events.csv"), str(LABELS),
                          "--report", str(OUT / "mistakes.csv")],
