@@ -1,13 +1,25 @@
-# Door zones for the MEVA cameras used in testing, marked by eye on one frame of each room.
-# Fractions of the frame: [x1, y1, x2, y2]. Zones include the floor in front of each door.
-G421:   # school cafeteria
+# Zones for the MEVA cameras used in testing, marked by eye on one frame of each room.
+# Fractions of the frame: [x1, y1, x2, y2]. Zones include the floor in front.
+G421:   # school cafeteria; its tables and chairs move between sessions, so seats are coarse
   doors:
     - [0.10, 0.12, 0.21, 0.33]   # wooden double door, left
     - [0.36, 0.10, 0.46, 0.33]   # glass door, centre left
     - [0.47, 0.10, 0.60, 0.40]   # glass door, centre
     - [0.64, 0.12, 0.83, 0.52]   # large glass door, right
-G331:   # bus station waiting room
+  seats:
+    - [0.04, 0.26, 0.28, 0.52]   # sofas and armchair
+    - [0.15, 0.36, 0.52, 0.78]   # tables and chairs
+G331:   # bus station waiting room; benches are fixed
   doors:
     - [0.24, 0.10, 0.38, 0.38]   # double door, back wall
     - [0.69, 0.04, 0.77, 0.30]   # back corridor door
     - [0.93, 0.10, 1.00, 0.45]   # dark door, right
+  seats:
+    - [0.30, 0.25, 0.46, 0.46]   # black bench, back left
+    - [0.42, 0.18, 0.58, 0.34]   # pink bench
+    - [0.59, 0.36, 0.80, 0.66]   # black bench, centre right
+    - [0.73, 0.26, 0.88, 0.48]   # black bench, back right
+    - [0.31, 0.57, 0.66, 0.99]   # large bench, front
+    - [0.18, 0.25, 0.26, 0.40]   # chair, left wall
+    - [0.18, 0.41, 0.26, 0.58]   # red bench, left wall
+    - [0.82, 0.68, 1.00, 1.00]   # chairs, front right

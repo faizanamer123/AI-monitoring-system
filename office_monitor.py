@@ -38,7 +38,8 @@ from office.objects import DEFAULT_WEIGHTS as OBJECT_WEIGHTS
 from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
                                PersonTracker, drop_nested)
-from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
+from office.posture import (POSTURES, SITTING, STANDING, UNKNOWN, WALKING, HeadDrop,
+                            PostureTracker)
 from office.stitch import IdStitcher, touches_edge
 from office.zones import at_door, doors_for, load_zones
 
@@ -87,6 +88,8 @@ def parse_args():
     parser.add_argument("--zones", type=load_zones, default=None, metavar="YAML",
                         help="marked doors per camera (see mark_zones.py); used instead of "
                              "the frame edge for cameras listed in the file")
+    parser.add_argument("--head-drop", action="store_true",
+                        help="also detect sit down / stand up from the shoulders dropping or rising")
     parser.add_argument("--frame-size", type=frame_size, default=None, metavar="WxH",
                         help="with --tracks: frame size, for caches that did not record it")
     args = parser.parse_args()
@@ -164,7 +167,8 @@ def run_source(source, name, args, store, out):
     # only means something for a room camera, and auto leaves it off for live cameras.
     use_edges = args.enter_exit == "edge" or (args.enter_exit == "auto" and not live)
     doors = doors_for(args.zones, name, size) if args.enter_exit != "off" else None
-    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None, doors)
+    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None, doors,
+                  doors_for(args.zones, name, size, "seats"), args.head_drop)
     cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
              if args.save_tracks else None)
     writer = None
@@ -227,13 +231,17 @@ class Rules:
     always give identical events -- otherwise a result tuned on the cache would not be
     the result the live system produces."""
 
-    def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None, doors=None):
+    def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None, doors=None,
+                 seats=None, head_drop=False):
         self.postures = PostureTracker()
         self.activities = ActivityTracker()
         self.changes = PostureChanges()
         self.stitcher = IdStitcher(stitch_gap_s) if stitch_gap_s > 0 else None
         self.frame_size = frame_size    # None turns the frame-edge rule off
         self.doors = doors              # marked doors replace the frame edge entirely
+        self.seats = seats              # with marked seats, sitting only happens at one
+        self.head_drop = HeadDrop() if head_drop else None
+        self.last_change = {}
         # Someone in view but unreadable for a few seconds keeps their state: a short
         # blind spot is not a change. Posture only: "no activity" is a real answer, and
         # holding it would stretch every phone call.
@@ -251,7 +259,8 @@ class Rules:
         people = drop_nested(raw_people)
         if self.stitcher is not None:
             people = self.stitcher.update(people, t)
-        labels = {p.track_id: self.postures.update(p, t) for p in people}
+        seated_spot = {p.track_id: not self.seats or at_door(p.box, self.seats) for p in people}
+        labels = {p.track_id: self.postures.update(p, t, seated_spot[p.track_id]) for p in people}
         doing = {p.track_id: self.activities.update(p, labels[p.track_id], things, t)
                  for p in people}
         if self.doors:
@@ -262,12 +271,19 @@ class Rules:
             edges = None
         written = len(self.log.events)
         onsets = {i: self.postures.onset(i) for i in labels}
-        for track_id, label in labels.items():
+        for person in people:
+            track_id = person.track_id
             # sitting inferred from stillness counts for the timeline, never as a change
-            change = self.changes.update(track_id,
-                                         UNKNOWN if onsets[track_id] is not None else label, t)
-            if change:
-                self.log.add_change(track_id, *change)
+            seen = UNKNOWN if onsets[track_id] is not None else labels[track_id]
+            found = [self.changes.update(track_id, seen, t)]
+            if self.head_drop is not None:
+                found.append(self.head_drop.update(person, t))
+            for change in filter(None, found):
+                previous = self.last_change.get(track_id)
+                repeated = previous and previous[0] == change[0] and change[1] - previous[1] < 3.0
+                if seated_spot[track_id] and not repeated:
+                    self.last_change[track_id] = change
+                    self.log.add_change(track_id, *change)
         self.log.update(t, labels, onsets, edges)
         self.store.write(self.log.events[written:])
         self.store.write(self.activity_log.update(t, doing))
@@ -275,6 +291,9 @@ class Rules:
             self.postures.forget(gone)
             self.activities.forget(gone)
             self.changes.forget(gone)
+            self.last_change.pop(gone, None)
+            if self.head_drop is not None:
+                self.head_drop.forget(gone)
         return people, labels, doing
 
     def finish(self):
@@ -287,7 +306,9 @@ def replay_source(path, store, args):
     known = cached_frame_size(path) or args.frame_size
     size = None if args.enter_exit == "off" else known
     doors = doors_for(args.zones, path.stem, known) if known and args.enter_exit != "off" else None
-    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors)
+    seats = doors_for(args.zones, path.stem, known, "seats") if known else None
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors, seats,
+                  args.head_drop)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()

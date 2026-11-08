@@ -18,7 +18,7 @@ from office.events import EventLog, PostureChanges, summarise
 from office.objects import Thing
 from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, R_KNEE,
                                R_SHOULDER, R_WRIST, Person, drop_nested)
-from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
+from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, HeadDrop, PostureTracker,
                             classify_frame)
 from office.stitch import IdStitcher, touches_edge
 from office.zones import at_door, doors_for
@@ -535,6 +535,60 @@ def test_marked_doors_replace_the_frame_edge():
     for i in range(10, 30):
         rules.step(i * 0.5, [at_the_door])
     assert [e.label for e in rules.finish() if e.kind == "change"] == ["enter"]
+
+
+def shoulders_at(y, box_bottom=400.0):
+    person = skeleton(y=y, knee_drop=None, box_height=2.0)
+    x1, y1, x2, _ = person.box
+    person.box = (x1, y1, x2, int(box_bottom))
+    return person
+
+
+def test_shoulders_dropping_with_feet_still_is_a_sit_down():
+    detector = HeadDrop()
+    found = [detector.update(shoulders_at(100 + min(max(i - 20, 0), 10) * 4), i * 0.1)
+             for i in range(60)]
+    events = [f for f in found if f]
+    assert [name for name, _ in events] == ["sit down"]
+    assert 1.5 <= events[0][1] <= 4.5        # the drop runs from 2 to 3 s
+
+
+def test_shoulders_rising_is_a_stand_up():
+    detector = HeadDrop()
+    found = [detector.update(shoulders_at(140 - min(max(i - 20, 0), 10) * 4), i * 0.1)
+             for i in range(60)]
+    assert [f[0] for f in found if f] == ["stand up"]
+
+
+def test_walking_towards_the_camera_is_not_a_sit_down():
+    detector = HeadDrop()
+    found = [detector.update(shoulders_at(100 + i * 2, box_bottom=300 + i * 6), i * 0.1)
+             for i in range(60)]
+    assert not any(found)
+
+
+def test_changes_only_count_at_a_marked_seat():
+    seat = [(50, 50, 400, 500)]
+    def changes(person_x, seats):
+        rules = Rules("cam", NoStore(), seats=seats)
+        for i in range(100):
+            t = i * 0.1
+            rules.step(t, [skeleton(x=person_x, knee_drop=0.9 if t < 5 else 0.1)])
+        return [e.label for e in rules.finish() if e.kind == "change"]
+    assert changes(200, seat) == ["sit down"]
+    assert changes(600, seat) == []
+    assert changes(600, None) == ["sit down"]
+
+
+def test_stillness_only_means_sitting_at_a_seat():
+    seat = [(50, 50, 200, 500)]
+    def label_after_stillness(person_x):
+        rules = Rules("cam", NoStore(), seats=seat)
+        for i in range(70):
+            _, labels, _ = rules.step(i * 0.1, [skeleton(x=person_x, knee_drop=None, box_height=2.0)])
+        return labels[1]
+    assert label_after_stillness(100) == SITTING
+    assert label_after_stillness(600) == UNKNOWN
 
 
 def test_two_cameras_must_agree_when_asked():
