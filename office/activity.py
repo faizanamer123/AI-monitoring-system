@@ -1,7 +1,7 @@
 """
 What is a person DOING, as opposed to their posture -- from pose + nearby objects.
 
-    on_call       a phone at the head
+    on_call       a phone at the head, with a hand raised to it
     using_phone   a phone at a hand, away from the head (texting, scrolling)
     working       seated with a laptop, keyboard, monitor or mouse within reach
 
@@ -29,7 +29,10 @@ from .posture import MIN_CONF, SITTING, UNKNOWN, torso_length
 ON_CALL, USING_PHONE, WORKING = "on_call", "using_phone", "working"
 ACTIVITIES = (ON_CALL, USING_PHONE, WORKING)
 
-CALL_DIST = 0.7     # phone centre within this many torso lengths of the head
+# A phone held in front of the chest is within 0.7 torso lengths of the head, so that
+# limit called most phone users "on a call": 316 false alarms against 40 real calls on MEVA.
+CALL_DIST = 0.4     # phone centre within this many torso lengths of the head
+CALL_HAND = 0.6     # and a wrist raised to within this many of the head
 HOLD_DIST = 0.6     # ... of a wrist
 REACH = 0.5         # computer centre within the person box widened by this fraction
 
@@ -63,7 +66,8 @@ def classify_activity(person, posture, things):
     holding = False
     for phone in (t for t in things if t.name == "cell phone" and _near_person(t.box, person, 0.25)):
         where = centre(phone.box)
-        if head is not None and np.linalg.norm(where - head) <= CALL_DIST * scale:
+        if head is not None and np.linalg.norm(where - head) <= CALL_DIST * scale and any(
+                np.linalg.norm(w - head) <= CALL_HAND * scale for w in wrists):
             return ON_CALL
         if any(np.linalg.norm(where - w) <= HOLD_DIST * scale for w in wrists):
             holding = True

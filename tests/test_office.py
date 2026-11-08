@@ -260,6 +260,16 @@ def test_phone_at_the_hand_is_using_phone():
     assert classify_activity(person, SITTING, [phone_at(102, 165)]) == USING_PHONE
 
 
+def test_phone_held_at_the_chest_is_not_a_call():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(100, 112)])
+    assert classify_activity(person, SITTING, [phone_at(100, 108)]) == USING_PHONE
+
+
+def test_phone_near_the_head_with_the_hand_down_is_not_a_call():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(100, 160)])
+    assert classify_activity(person, SITTING, [phone_at(106, 74)]) == UNKNOWN
+
+
 def test_hand_at_the_head_without_a_phone_is_not_a_call():
     """Scratching your head is not a phone call."""
     person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(105, 72)])
