@@ -11,6 +11,7 @@ import sqlite3
 
 import numpy as np
 import pytest
+import torch
 
 from office.activity import ON_CALL, USING_PHONE, WORKING, classify_activity
 from office.cache import TrackWriter, read_tracks
@@ -20,6 +21,7 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
                                R_SHOULDER, R_WRIST, Person, drop_nested)
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
+from office.skeleton import CLASSES, FRAMES, SkeletonTCN, window_features
 from office.stitch import IdStitcher, touches_edge
 from office.zones import at_door, doors_for
 from evaluate_meva import match_segments, read_labels
@@ -569,6 +571,47 @@ def test_stillness_only_means_sitting_at_a_seat():
         return labels[1]
     assert label_after_stillness(100) == SITTING
     assert label_after_stillness(600) == UNKNOWN
+
+
+def moving_track(seconds=6.0, rate=15):
+    times = np.arange(0, seconds, 1 / rate)
+    keypoints = np.stack([skeleton(y=100 + 2 * i, knee_drop=0.5).keypoints for i in range(len(times))])
+    boxes = np.array([skeleton(y=100 + 2 * i).box for i in range(len(times))], np.float32)
+    return times, boxes, keypoints.astype(np.float32)
+
+
+def test_window_features_have_the_right_shape_and_ignore_where_the_person_is():
+    times, boxes, keypoints = moving_track()
+    a = window_features(times, boxes, keypoints, 3.0)
+    assert a.shape == (FRAMES, 51)
+    keypoints[:, :, 0] += 500.0
+    boxes[:, [0, 2]] += 500.0
+    assert np.allclose(a, window_features(times, boxes, keypoints, 3.0))
+
+
+def test_window_features_refuse_a_mostly_empty_window():
+    times, boxes, keypoints = moving_track()
+    assert window_features(times[:10], boxes[:10], keypoints[:10], 5.0) is None
+
+
+def test_skeleton_model_outputs_one_score_per_class():
+    model = SkeletonTCN()
+    assert model(torch.zeros((2, FRAMES, 51))).shape == (2, len(CLASSES))
+
+
+def test_meva_events_attach_to_the_overlapping_track(tmp_path):
+    from train_skeleton import attach, read_events, read_geom
+
+    labels = tmp_path / "a.activities.yml"
+    labels.write_text("- {'act': {'act2': {'person_sits_down': 1.0}, 'actors': [{'id1': 2, "
+                      "'timespan': [{'tsr0': [300, 333]}]}], 'id2': 1}}\n")
+    geom = tmp_path / "a.geom.yml"
+    geom.write_text("- {'geom': {'g0': '100 100 200 300', 'id0': 1, 'id1': 2, 'ts0': 316}}\n")
+    times = np.array([10.0, 10.5, 11.0])
+    people = {7: (times, np.full((3, 4), [105.0, 105.0, 205.0, 305.0]), np.zeros((3, 17, 3))),
+              9: (times, np.full((3, 4), [600.0, 105.0, 700.0, 305.0]), np.zeros((3, 17, 3)))}
+    attached, missed = attach(read_events(labels), read_geom(geom), people)
+    assert attached == [("sit down", pytest.approx(10.55), 7)] and missed == 0
 
 
 def test_two_cameras_must_agree_when_asked():
