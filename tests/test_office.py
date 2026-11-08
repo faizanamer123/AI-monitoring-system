@@ -6,6 +6,9 @@ No model and no video -- these check the reasoning, so they run in milliseconds.
 Run:  python -m pytest tests/test_office.py -v
 """
 
+import csv
+import sqlite3
+
 import numpy as np
 import pytest
 
@@ -302,6 +305,22 @@ def test_cache_round_trip_keeps_people_and_objects(tmp_path):
     assert people[0].box == person.box and np.allclose(people[0].keypoints, person.keypoints)
     assert [(t.name, t.box) for t in things] == [("cell phone", (40, 50, 60, 70))]
     assert no_people == [] and no_things == []
+
+
+# --- storage -----------------------------------------------------------------------------
+
+def test_a_second_run_does_not_erase_the_first(tmp_path):
+    from office.events import Event, EventStore
+
+    for session in ("run1", "run2"):
+        store = EventStore(tmp_path, session)
+        store.write([Event("cam", 1, "posture", SITTING, 0.0, 5.0)])
+        store.close()
+    db = sqlite3.connect(tmp_path / "events.db")
+    assert [r[0] for r in db.execute("SELECT session FROM events")] == ["run1", "run2"]
+    db.close()
+    with open(tmp_path / "events.csv", newline="") as f:
+        assert [r["session"] for r in csv.DictReader(f)] == ["run1", "run2"]
 
 
 # --- tuning: confirmation, stitching, edges, steadiness, camera agreement --------------

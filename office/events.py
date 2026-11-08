@@ -22,6 +22,7 @@ they come back as a new id -- the timeline shows a left + appeared pair.
 import csv
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime
 
 from .posture import UNKNOWN
 
@@ -169,23 +170,30 @@ def summarise(events):
 class EventStore:
     """events.db (SQLite, for the dashboard to query) plus events.csv (to eyeball)."""
 
-    COLUMNS = ("source", "person", "kind", "label", "start", "end", "duration")
+    COLUMNS = ("session", "source", "person", "kind", "label", "start", "end", "duration")
 
-    def __init__(self, out_dir):
+    def __init__(self, out_dir, session=None):
+        """Every run appends under its own session id; nothing earlier is ever erased."""
+        self.session = session or datetime.now().strftime("%Y%m%d-%H%M%S")
+        csv_path = out_dir / "events.csv"
+        new_file = not csv_path.is_file()
+        if not new_file:
+            with open(csv_path, newline="") as f:
+                if tuple(next(csv.reader(f), ())) != self.COLUMNS:
+                    raise SystemExit(f"{csv_path} is in an older format; use a new --out folder")
         self.db = sqlite3.connect(out_dir / "events.db")
         self.db.execute(
-            "CREATE TABLE IF NOT EXISTS events (source TEXT, person INTEGER, kind TEXT, "
-            "label TEXT, start REAL, \"end\" REAL, duration REAL)")
-        # one run per output folder, matching the CSV, which is rewritten each time
-        self.db.execute("DELETE FROM events")
-        self.csv_file = open(out_dir / "events.csv", "w", newline="")
+            "CREATE TABLE IF NOT EXISTS events (session TEXT, source TEXT, person INTEGER, "
+            "kind TEXT, label TEXT, start REAL, \"end\" REAL, duration REAL)")
+        self.csv_file = open(csv_path, "a", newline="")
         self.csv = csv.writer(self.csv_file)
-        self.csv.writerow(self.COLUMNS)
+        if new_file:
+            self.csv.writerow(self.COLUMNS)
 
     def write(self, events):
-        rows = [(e.source, e.person, e.kind, e.label, round(e.start, 2), round(e.end, 2),
-                 round(e.duration, 2)) for e in events]
-        self.db.executemany("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+        rows = [(self.session, e.source, e.person, e.kind, e.label, round(e.start, 2),
+                 round(e.end, 2), round(e.duration, 2)) for e in events]
+        self.db.executemany("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
         self.db.commit()
         self.csv.writerows(rows)
         self.csv_file.flush()

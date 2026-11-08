@@ -276,7 +276,7 @@ def main():
         finally:
             store.close()
         print(f"replayed {len(caches)} cached videos in {time.perf_counter() - started:.1f}s")
-        write_summary(out, events)
+        write_summary(out, events, store.session)
         return
 
     if args.video:
@@ -300,20 +300,24 @@ def main():
             events += run_source(source, name, args, store, out)
     finally:
         store.close()
-    write_summary(out, events)
+    write_summary(out, events, store.session)
     if args.save_video:
         print(f"annotated videos in {out}/")
     if args.save_tracks:
         print(f"track caches in {args.save_tracks}/")
 
 
-def write_summary(out, events):
-    with open(out / "summary.csv", "w", newline="") as f:
+def write_summary(out, events, session):
+    path = out / "summary.csv"
+    new_file = not path.is_file()
+    with open(path, "a", newline="") as f:
         rows = csv.writer(f)
         columns = POSTURES + ACTIVITIES
-        rows.writerow(["source", "person", *(f"{c}_s" for c in columns)])
+        if new_file:
+            rows.writerow(["session", "source", "person", *(f"{c}_s" for c in columns)])
         for (source, person), totals in sorted(summarise(events).items()):
-            rows.writerow([source, person, *(round(totals.get(c, 0.0), 1) for c in columns)])
+            rows.writerow([session, source, person,
+                           *(round(totals.get(c, 0.0), 1) for c in columns)])
     print(f"wrote {out}/ (events.db, events.csv, summary.csv)")
 
 

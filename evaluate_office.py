@@ -212,7 +212,11 @@ def score(args):
     wanted = set(split(args.split, args.labels))
     rows = defaultdict(list)          # (recid, camera) -> rows
     with open(args.events) as f:
-        for row in csv.DictReader(f):
+        everything = list(csv.DictReader(f))
+    # a folder accumulates sessions, and scoring two runs at once would double every event
+    latest = max(row["session"] for row in everything) if everything else None
+    for row in everything:
+        if row["session"] == latest:
             m = SOURCE.match(row["source"])
             if m and int(m["recid"]) in wanted:
                 rows[(int(m["recid"]), m["camera"])].append(row)
