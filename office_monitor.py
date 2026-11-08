@@ -33,7 +33,7 @@ import cv2
 
 from office.activity import ACTIVITIES, ActivityTracker
 from office.cache import TrackWriter, cached_frame_size, read_tracks
-from office.events import EventLog, EventStore, summarise
+from office.events import EventLog, EventStore, PostureChanges, summarise
 from office.objects import DEFAULT_WEIGHTS as OBJECT_WEIGHTS
 from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
@@ -42,6 +42,7 @@ from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, Postur
 from office.stitch import IdStitcher, touches_edge
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
+HOLD_UNKNOWN_S = 10.0
 COLORS = {SITTING: (255, 160, 0), STANDING: (0, 200, 0), WALKING: (0, 140, 255),
           UNKNOWN: (160, 160, 160)}
 
@@ -79,6 +80,9 @@ def parse_args():
                         help="ignore a person id until it has existed this long")
     parser.add_argument("--stitch-gap", type=float, default=5.0,
                         help="re-join a track lost for up to this many seconds (0 = off)")
+    parser.add_argument("--enter-exit", default="auto", choices=["auto", "edge", "off"],
+                        help="report enter / exit at the frame edge; auto is on for videos "
+                             "and off for a live camera")
     parser.add_argument("--frame-size", type=frame_size, default=None, metavar="WxH",
                         help="with --tracks: frame size, for caches that did not record it")
     args = parser.parse_args()
@@ -152,7 +156,10 @@ def run_source(source, name, args, store, out):
     objects = (ObjectDetector(args.object_weights, args.objects, device=args.device)
                if args.objects != "off" else None)
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size)
+    # A person close to a webcam touches the frame border all the time, so the edge rule
+    # only means something for a room camera, and auto leaves it off for live cameras.
+    use_edges = args.enter_exit == "edge" or (args.enter_exit == "auto" and not live)
+    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None)
     cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
              if args.save_tracks else None)
     writer = None
@@ -218,12 +225,17 @@ class Rules:
     def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None):
         self.postures = PostureTracker()
         self.activities = ActivityTracker()
+        self.changes = PostureChanges()
         self.stitcher = IdStitcher(stitch_gap_s) if stitch_gap_s > 0 else None
-        self.frame_size = frame_size
-        # a stitched id can return up to stitch_gap_s later, so the log must not have
-        # declared it gone by then
+        self.frame_size = frame_size    # None turns enter / exit off
+        # Someone in view but unreadable for a few seconds keeps their state: a short
+        # blind spot is not a change. Posture only: "no activity" is a real answer, and
+        # holding it would stretch every phone call.
+        # An id must outlast a stitched return, but not the 10 s hold: waiting that long
+        # to call someone gone lost every exit in the last 10 s of a recording.
         lost_after = max(2.0, stitch_gap_s + 0.5)
-        self.log = EventLog(name, lost_after=lost_after, confirm_s=confirm_s)
+        self.log = EventLog(name, lost_after=lost_after, confirm_s=confirm_s,
+                            hold_unknown=HOLD_UNKNOWN_S)
         # presence is the posture log's job; this one only records what people do
         self.activity_log = EventLog(name, kind="activity", presence=False,
                                      lost_after=lost_after, confirm_s=confirm_s)
@@ -238,12 +250,21 @@ class Rules:
                  for p in people}
         edges = ({p.track_id: touches_edge(p.box, self.frame_size) for p in people}
                  if self.frame_size else None)
-        self.store.write(self.log.update(t, labels,
-                                        {i: self.postures.onset(i) for i in labels}, edges))
+        written = len(self.log.events)
+        onsets = {i: self.postures.onset(i) for i in labels}
+        for track_id, label in labels.items():
+            # sitting inferred from stillness counts for the timeline, never as a change
+            change = self.changes.update(track_id,
+                                         UNKNOWN if onsets[track_id] is not None else label, t)
+            if change:
+                self.log.add_change(track_id, *change)
+        self.log.update(t, labels, onsets, edges)
+        self.store.write(self.log.events[written:])
         self.store.write(self.activity_log.update(t, doing))
         for gone in set(self.postures.history) - set(self.log.tracks):
             self.postures.forget(gone)
             self.activities.forget(gone)
+            self.changes.forget(gone)
         return people, labels, doing
 
     def finish(self):
@@ -253,8 +274,8 @@ class Rules:
 
 def replay_source(path, store, args):
     """Rules only, from a cached .npz: no model, no video."""
-    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap,
-                  cached_frame_size(path) or args.frame_size)
+    size = None if args.enter_exit == "off" else (cached_frame_size(path) or args.frame_size)
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()

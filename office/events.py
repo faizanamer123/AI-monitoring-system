@@ -10,6 +10,7 @@ Event kinds:
   activity   a stretch of on_call / using_phone / working, in parallel with posture --
              "sitting" and "on_call" overlap, which is the point
   left       the id was not seen for `lost_after` seconds; timed at the last sighting
+  change     a moment: sit down, stand up, enter or exit
 
 PRIVACY. Only these rows are stored, never frames. The database answers "how long did
 P3 sit" without holding a single image of P3.
@@ -24,7 +25,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from .posture import UNKNOWN
+from .posture import SITTING, UNKNOWN
 
 
 @dataclass
@@ -41,18 +42,66 @@ class Event:
         return self.end - self.start
 
 
+class PostureChanges:
+    """Per-person sit-down / stand-up detection, online, from OBSERVED posture only.
+
+    Pass UNKNOWN for anything not actually seen, including sitting inferred from
+    stillness: that inference is fine for a timeline, but it fires when someone merely
+    stops moving, and on MM-Office it was the largest single source of false sit-downs.
+
+    Standing and walking are one "upright" state, so stand up then walk away is a single
+    change. A new state must persist for `confirm_s` to replace the old one, so a flicker
+    is no change at all. If the two states are more than `max_gap` apart we do not know
+    when the change happened, and no event is reported.
+    """
+
+    def __init__(self, confirm_s=1.0, max_gap=5.0):
+        self.confirm_s = confirm_s
+        self.max_gap = max_gap
+        self.people = {}
+
+    def update(self, track_id, label, t):
+        """Returns ("sit down" or "stand up", when it happened), or None."""
+        if label == UNKNOWN:
+            return None
+        seated = label == SITTING
+        person = self.people.setdefault(track_id, {"state": None, "last": None,
+                                                   "candidate": None, "since": None, "seen": None})
+        if seated == person["state"]:
+            person["last"], person["candidate"] = t, None
+            return None
+        if person["candidate"] != seated or t - person["seen"] > self.max_gap:
+            person["candidate"], person["since"] = seated, t
+        person["seen"] = t
+        if t - person["since"] < self.confirm_s:
+            return None
+        before, last, since = person["state"], person["last"], person["since"]
+        person.update(state=seated, last=t, candidate=None)
+        if before is None or since - last > self.max_gap:
+            return None
+        return ("sit down" if seated else "stand up"), (last + since) / 2
+
+    def forget(self, track_id):
+        self.people.pop(track_id, None)
+
+
 class EventLog:
     """Feed update(t, {track_id: label}) once per processed frame, then close(t)."""
 
     def __init__(self, source, lost_after=2.0, min_segment=1.0, hold_unknown=3.0,
-                 kind="posture", presence=True, confirm_s=0.0):
+                 kind="posture", presence=True, confirm_s=0.0, settle=1.0):
         """kind names the segments this log writes ("posture", "activity"). One person
         has one timeline per kind; only one of them should own presence, or every
         arrival is logged once per kind.
 
         confirm_s: an id writes nothing until it has existed this long, then its events
         are released, backdated. Most ids that die young are a chair or a coat detected
-        for a few frames, and a real person is always around longer than that."""
+        for a few frames, and a real person is always around longer than that.
+
+        settle: someone at the frame edge this soon after the start was already in the
+        room, so it is not an enter."""
+        self.started = None
+        self.settle = settle
         self.source = source
         self.kind = kind
         self.presence = presence
@@ -79,6 +128,8 @@ class EventLog:
         onsets = onsets or {}
         edges = edges or {}
         before = len(self.events)
+        if self.started is None:
+            self.started = t
         for track_id, label in labels.items():
             track = self.tracks.get(track_id)
             if track is None:
@@ -89,6 +140,8 @@ class EventLog:
                 if self.presence:
                     self._emit(track, Event(self.source, track_id, "appeared",
                                             self._place(track), t, t))
+                    if track["at_edge"] and t - self.started > self.settle:
+                        self._emit(track, Event(self.source, track_id, "change", "enter", t, t))
                 continue
             track["last_seen"] = t
             track["at_edge"] = edges.get(track_id)
@@ -150,6 +203,16 @@ class EventLog:
         if self.presence:
             self._emit(track, Event(self.source, track_id, "left", self._place(track),
                                     track["last_seen"], track["last_seen"]))
+            if track["at_edge"]:
+                self._emit(track, Event(self.source, track_id, "change", "exit",
+                                        track["last_seen"], track["last_seen"]))
+
+    def add_change(self, track_id, label, when):
+        """Record a sit down / stand up, held back like everything else until the id
+        is confirmed."""
+        track = self.tracks.get(track_id)
+        if track is not None:
+            self._emit(track, Event(self.source, track_id, "change", label, when, when))
 
     def active(self):
         """{id: (label, seconds in it so far)} for people currently in view."""

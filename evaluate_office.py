@@ -2,19 +2,16 @@
 Score office_monitor.py's timeline against MM-Office's labelled test events.
 
     python evaluate_office.py videos --split tuning > tuning.txt   # which videos to run
-    python office_monitor.py --video tuning.txt --out office_runs/tuning
-    python evaluate_office.py score office_runs/tuning/events.csv --split tuning
+    python office_monitor.py --video tuning.txt --out ../results/runs/tuning
+    python evaluate_office.py score ../results/runs/tuning/events.csv --split tuning
 
 WHAT IS SCORED. MM-Office labels each test recording with events and their start/end
-second. Four of its 13 classes follow from what office_monitor already outputs:
+second. Four of its 13 classes are events office_monitor reports itself:
 
-    sit down   a person's posture changes from standing/walking to sitting
-    stand up   ... from sitting to standing/walking
-    enter      a person id appears (not counting those already in view at the start)
-    exit       a person id is lost for good
-
-enter/exit are a baseline: a tracker that loses someone behind a partition reports an
-exit and an enter that never happened.
+    sit down   a person's observed posture changes from upright to sitting
+    stand up   ... from sitting to upright
+    enter      a person id appears at the frame edge
+    exit       a person id is lost for good at the frame edge
 
 MATCHING. A detection is correct if it falls inside a labelled event of the same class,
 widened by --collar seconds either side (default 2). Each labelled event can be matched
@@ -40,9 +37,7 @@ from pathlib import Path
 LABELS = Path("../mm-office/MM_Office_Dataset/label/testlabel")
 VIDEOS = Path("../mm-office/MM_Office_Dataset/video/test")
 CLASSES = {8: "enter", 9: "exit", 10: "stand up", 11: "sit down"}
-SEATED = "sitting"
-UPRIGHT = ("standing", "walking")
-SOURCE = re.compile(r"(?P<split>split\d+)_(?P<camera>id\d+)_s(?P<scene>\d+)_recid(?P<recid>\d+)")
+SOURCE =re.compile(r"(?P<split>split\d+)_(?P<camera>id\d+)_s(?P<scene>\d+)_recid(?P<recid>\d+)")
 CAMERAS = ("id00", "id01", "id02", "id03")
 TUNING_COUNT = 22
 SEED = 0
@@ -76,52 +71,12 @@ def ground_truth(recid, label_dir=LABELS):
     return out
 
 
-def steady(segments, hold, max_gap):
-    """Sorted (start, end, label) -> (start, end, seated?), flicker removed.
-
-    Standing and walking merge into one "upright" state: stand up then walk away is a
-    single change. Stretches shorter than `hold` seconds are then dropped and what they
-    separated is joined, so sit-stand-sit in a few seconds is no change at all.
-    """
-    def join(items):
-        out = []
-        for start, end, seated in items:
-            if out and out[-1][2] == seated and start - out[-1][1] <= max_gap:
-                out[-1] = (out[-1][0], end, seated)
-            else:
-                out.append((start, end, seated))
-        return out
-
-    joined = join([(s, e, label == SEATED) for s, e, label in segments])
-    return join([seg for seg in joined if seg[1] - seg[0] >= hold])
-
-
-def detections(rows, max_gap=5.0, settle=1.0, hold=0.0, edge_only=False):
+def detections(rows):
     """events.csv rows for ONE video -> [(class name, time), ...]
 
-    A posture change is timed at the midpoint between the old segment's end and the new
-    one's start. Unknown stretches are not logged, so the two need not touch; if they
-    are more than max_gap apart we do not know when the change happened and skip it.
-    `appeared` within `settle` seconds of the start is someone already in the room.
-    edge_only: only ids that arrive or vanish at the frame border are enter / exit.
-    """
-    out = []
-    by_person = defaultdict(list)
-    for r in rows:
-        t = float(r["start"])
-        at_edge = r["label"] == "edge" or not edge_only
-        if r["kind"] == "appeared" and t > settle and at_edge:
-            out.append(("enter", t))
-        elif r["kind"] == "left" and at_edge:
-            out.append(("exit", t))
-        elif r["kind"] == "posture":
-            by_person[r["person"]].append((t, float(r["end"]), r["label"]))
-    for segments in by_person.values():
-        states = steady(sorted(segments), hold, max_gap)
-        for (_, prev_end, prev), (start, _, cur) in zip(states, states[1:]):
-            if start - prev_end <= max_gap and prev != cur:
-                out.append(("sit down" if cur else "stand up", (prev_end + start) / 2))
-    return out
+    The monitor decides what counts as an event (office/events.py), so what is scored
+    here is exactly what the live system reports."""
+    return [(r["label"], float(r["start"])) for r in rows if r["kind"] == "change"]
 
 
 def merge(dets, window, min_cameras=1):
@@ -213,6 +168,8 @@ def score(args):
     rows = defaultdict(list)          # (recid, camera) -> rows
     with open(args.events) as f:
         everything = list(csv.DictReader(f))
+    if everything and "session" not in everything[0]:
+        raise SystemExit(f"{args.events} predates change events; replay it with this version")
     # a folder accumulates sessions, and scoring two runs at once would double every event
     latest = max(row["session"] for row in everything) if everything else None
     for row in everything:
@@ -236,7 +193,7 @@ def score(args):
             # A camera with no rows produced no events -- every labelled event is a
             # miss for it. Skipping it instead silently dropped those misses and
             # flattered the weakest cameras.
-            dets = detections(rows.get((recid, cam), []), hold=args.hold, edge_only=args.edge_only)
+            dets = detections(rows.get((recid, cam), []))
             pooled += [(cls, t, cam) for cls, t in dets]
             add(per_camera[cam], match(merge(dets, args.collar), truth, args.collar))
         add(fused, match(merge(pooled, args.collar), truth, args.collar))
@@ -289,10 +246,6 @@ def main():
     s.add_argument("--collar", type=float, default=2.0)
     s.add_argument("--report", help="write every found / missed / false event to this CSV "
                                     "(two-camera agreement)")
-    s.add_argument("--hold", type=float, default=0.0,
-                   help="a posture must last this long to count as a change")
-    s.add_argument("--edge-only", action="store_true",
-                   help="enter / exit only for ids born or lost at the frame border")
 
     args = parser.parse_args()
     videos(args) if args.cmd == "videos" else score(args)

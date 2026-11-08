@@ -14,14 +14,15 @@ import pytest
 
 from office.activity import ON_CALL, USING_PHONE, WORKING, classify_activity
 from office.cache import TrackWriter, read_tracks
-from office.events import EventLog, summarise
+from office.events import EventLog, PostureChanges, summarise
 from office.objects import Thing
 from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, R_KNEE,
                                R_SHOULDER, R_WRIST, Person, drop_nested)
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
 from office.stitch import IdStitcher, touches_edge
-from evaluate_office import detections, merge
+from evaluate_office import merge
+from office_monitor import Rules
 
 
 def skeleton(x=100.0, y=100.0, torso=50.0, knee_drop=None, box_height=None, scale=1.0):
@@ -376,19 +377,103 @@ def test_a_person_still_in_view_cannot_be_rejoined():
     assert sorted(p.track_id for p in out) == [1, 7]
 
 
-def posture_rows(*segments):
-    return [{"kind": "posture", "person": "1", "label": label, "start": str(a), "end": str(b)}
-            for a, b, label in segments]
+def changes_from(timeline):
+    """timeline: [(from_t, to_t, label), ...] at 10 samples per second"""
+    detector = PostureChanges()
+    found = []
+    for start, end, label in timeline:
+        for tick in range(int(start * 10), int(end * 10)):
+            change = detector.update(1, label, tick / 10)
+            if change:
+                found.append(change)
+    return found
+
+
+def test_a_real_stand_up_is_reported_when_it_happened():
+    found = changes_from([(0, 20, SITTING), (20, 30, STANDING)])
+    assert [name for name, _ in found] == ["stand up"]
+    assert found[0][1] == pytest.approx(19.95)
 
 
 def test_a_flicker_of_standing_is_not_a_stand_up():
-    rows = posture_rows((0, 20, SITTING), (20, 21, STANDING), (21, 40, SITTING))
-    assert detections(rows, hold=3.0) == []
+    assert changes_from([(0, 20, SITTING), (20, 20.5, STANDING), (20.5, 40, SITTING)]) == []
 
 
 def test_stand_up_then_walk_away_is_one_change():
-    rows = posture_rows((0, 20, SITTING), (20, 21.5, STANDING), (21.5, 25, WALKING))
-    assert detections(rows, hold=3.0) == [("stand up", 20.0)]
+    found = changes_from([(0, 20, SITTING), (20, 21.5, STANDING), (21.5, 25, WALKING)])
+    assert [name for name, _ in found] == ["stand up"]
+
+
+def test_a_change_across_a_long_blind_spot_is_not_timed():
+    assert changes_from([(0, 10, SITTING), (10, 30, UNKNOWN), (30, 40, STANDING)]) == []
+
+
+class NoStore:
+    def write(self, events):
+        pass
+
+
+def test_sitting_inferred_from_stillness_fills_the_timeline_but_is_no_sit_down():
+    rules = Rules("cam", NoStore())
+    for i in range(120):
+        t = i * 0.1
+        moving = min(i, 20) * 8                  # walks for 2 s, then stops
+        rules.step(t, [skeleton(x=100 + moving, knee_drop=None, box_height=2.0)])
+    events = rules.finish()
+    assert any(e.kind == "posture" and e.label == SITTING for e in events)
+    assert not any(e.kind == "change" for e in events)
+
+
+def test_an_observed_sit_down_reaches_the_live_timeline():
+    rules = Rules("cam", NoStore())
+    for i in range(100):
+        t = i * 0.1
+        rules.step(t, [skeleton(knee_drop=0.9 if t < 5 else 0.1)])
+    changes = [e for e in rules.finish() if e.kind == "change"]
+    assert [e.label for e in changes] == ["sit down"]
+    assert changes[0].start == pytest.approx(5.0, abs=1.0)
+
+
+def test_a_few_seconds_out_of_view_does_not_split_the_timeline():
+    rules = Rules("cam", NoStore(), stitch_gap_s=5.0)
+    for i in range(300):
+        t = i * 0.1
+        rules.step(t, [] if 10 <= t < 14 else [skeleton(knee_drop=0.1)])
+    posture = [e for e in rules.finish() if e.kind == "posture"]
+    assert len(posture) == 1
+    assert (posture[0].start, posture[0].end) == pytest.approx((0.0, 29.9))
+
+
+def test_an_unreadable_person_keeps_their_posture_for_ten_seconds():
+    rules = Rules("cam", NoStore())
+    for i in range(300):
+        t = i * 0.1
+        unreadable = skeleton(knee_drop=None, box_height=2.0)
+        unreadable.keypoints[[L_HIP, R_HIP], 2] = 0.1     # no torso, so no evidence at all
+        rules.step(t, [unreadable if 10 <= t < 18 else skeleton(knee_drop=0.1)])
+    posture = [e for e in rules.finish() if e.kind == "posture"]
+    assert len(posture) == 1
+
+
+def test_enter_and_exit_at_the_edge_only():
+    log = EventLog("cam", lost_after=1.0)
+    log.update(0.0, {}, edges={})
+    log.update(3.0, {1: STANDING}, edges={1: True})
+    log.update(5.0, {1: STANDING}, edges={1: True})
+    log.update(7.0, {})
+    log.update(10.0, {2: STANDING}, edges={2: False})
+    log.update(12.0, {2: STANDING}, edges={2: False})
+    log.update(14.0, {})
+    assert [e.label for e in log.events if e.kind == "change"] == ["enter", "exit"]
+
+
+def test_nobody_enters_with_edges_off():
+    log = EventLog("cam", lost_after=1.0)
+    log.update(0.0, {})
+    log.update(3.0, {1: STANDING})
+    log.update(5.0, {})
+    log.update(7.0, {})
+    assert not [e for e in log.events if e.kind == "change"]
 
 
 def test_two_cameras_must_agree_when_asked():
