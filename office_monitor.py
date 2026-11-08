@@ -9,7 +9,7 @@ Office activity monitor: track every person, label their posture, log a timeline
     python office_monitor.py --video list.txt --save-tracks tracks/   # cache model output
     python office_monitor.py --tracks tracks/ --out runs/try2          # rules only, fast
 
-Writes to --out (default office_runs/):
+Writes to --out (default ../results/runs/, beside the repository):
     events.db / events.csv   every event: appeared, posture segments, left
     summary.csv              seconds per person per posture
     <name>.mp4               annotated video, ONLY with --save-video
@@ -62,7 +62,7 @@ def parse_args():
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--every", type=int, default=2, help="process every Nth frame")
-    parser.add_argument("--out", default="office_runs")
+    parser.add_argument("--out", default="../results/runs")
     parser.add_argument("--save-video", action="store_true", help="also write annotated video")
     parser.add_argument("--show", action="store_true", help="display a live window")
     parser.add_argument("--blur-faces", action="store_true")

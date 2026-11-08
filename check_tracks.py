@@ -1,7 +1,7 @@
 """
 Check a folder of track caches against a split: which are missing, which are corrupt.
 
-    python check_tracks.py ../mm-office/kaggle_tracks_v1/tracks --split tuning
+    python check_tracks.py ../track_caches/v1/tuning --split tuning
 
 A download that drops mid-file leaves a truncated .npz that only fails when the rules
 are replayed, so every cache is opened and read in full here first.
