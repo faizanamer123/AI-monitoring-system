@@ -104,13 +104,13 @@ def merge(dets, window, min_cameras=1):
     return out
 
 
-def match(dets, truth, collar, outcomes=None):
+def match(dets, truth, collar, outcomes=None, classes=tuple(CLASSES.values())):
     """-> {class: [tp, fp, fn]}. Each truth event matches at most one detection, and a
     detection takes the nearest unmatched truth event whose widened window holds it.
     outcomes: optional list, receives (class, result, label start, label end, detected)."""
     counts = defaultdict(lambda: [0, 0, 0])
     log = outcomes.append if outcomes is not None else lambda row: None
-    for cls in set(CLASSES.values()):
+    for cls in classes:
         events = [(s, e) for c, s, e in truth if c == cls]
         used = [False] * len(events)
         for t in sorted(t for c, t in dets if c == cls):
@@ -146,18 +146,18 @@ def prf(tp, fp, fn):
     return p, r, (2 * p * r / (p + r) if p + r else 0.0)
 
 
-def table(title, counts):
+def table(title, counts, classes=("sit down", "stand up", "enter", "exit")):
     print(f"\n{title}")
-    print(f"  {'event':<10} {'labelled':>8} {'found':>6} {'false':>6}   "
+    print(f"  {'event':<11} {'labelled':>8} {'found':>6} {'false':>6}   "
           f"{'precision':>9} {'recall':>7} {'F1':>6}")
     total = [0, 0, 0]
-    for cls in ("sit down", "stand up", "enter", "exit"):
+    for cls in classes:
         tp, fp, fn = counts.get(cls, [0, 0, 0])
         total = [a + b for a, b in zip(total, (tp, fp, fn))]
         p, r, f = prf(tp, fp, fn)
-        print(f"  {cls:<10} {tp + fn:>8} {tp:>6} {fp:>6}   {p:>9.3f} {r:>7.3f} {f:>6.3f}")
+        print(f"  {cls:<11} {tp + fn:>8} {tp:>6} {fp:>6}   {p:>9.3f} {r:>7.3f} {f:>6.3f}")
     p, r, f = prf(*total)
-    print(f"  {'all four':<10} {total[0] + total[2]:>8} {total[0]:>6} {total[1]:>6}   "
+    print(f"  {'all':<11} {total[0] + total[2]:>8} {total[0]:>6} {total[1]:>6}   "
           f"{p:>9.3f} {r:>7.3f} {f:>6.3f}")
 
 

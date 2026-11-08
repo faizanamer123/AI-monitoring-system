@@ -21,6 +21,7 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
 from office.stitch import IdStitcher, touches_edge
+from evaluate_meva import match_segments, read_labels
 from evaluate_office import intervals, merge
 from office_monitor import Rules
 
@@ -483,6 +484,23 @@ def test_interval_brackets_the_score_and_narrows_with_more_recordings():
     many = {i: rows[i % 10] for i in range(200)}
     (low2, high2), _, _ = intervals(many, ("sit down",), samples=500)
     assert high2 - low2 < high - low
+
+
+def test_meva_labels_read_in_both_file_formats(tmp_path):
+    path = tmp_path / "a.activities.yml"
+    path.write_text("- { meta: { team: 'Kitware' } }\n"
+                    "- {'act': {'act2': {'person_sits_down': 1.0}, 'actors': [{'id1': 2, "
+                    "'timespan': [{'tsr0': [300, 333]}]}], 'id2': 1}}\n"
+                    "- { act: { act2: { person_stands_up: 1.0 }, id2: 16, "
+                    "timespan: [{tsr0: [ 600, 630 ]}] } }\n"
+                    "- { act: { act2: { vehicle_stops: 1.0 }, timespan: [{tsr0: [ 1, 2 ]}] } }\n")
+    assert read_labels(path) == [("sit down", 10.0, 11.1), ("stand up", 20.0, 21.0)]
+
+
+def test_a_phone_segment_counts_if_it_overlaps_the_label():
+    truth = [("on_call", 10.0, 20.0)]
+    assert match_segments([("on_call", 15.0, 40.0)], truth, 2.0)["on_call"] == [1, 0, 0]
+    assert match_segments([("on_call", 30.0, 40.0)], truth, 2.0)["on_call"] == [0, 1, 1]
 
 
 def test_two_cameras_must_agree_when_asked():
