@@ -21,6 +21,7 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
 from office.stitch import IdStitcher, touches_edge
+from office.zones import at_door, doors_for
 from evaluate_meva import match_segments, read_labels
 from evaluate_office import intervals, merge
 from office_monitor import Rules
@@ -501,6 +502,39 @@ def test_a_phone_segment_counts_if_it_overlaps_the_label():
     truth = [("on_call", 10.0, 20.0)]
     assert match_segments([("on_call", 15.0, 40.0)], truth, 2.0)["on_call"] == [1, 0, 0]
     assert match_segments([("on_call", 30.0, 40.0)], truth, 2.0)["on_call"] == [0, 1, 1]
+
+
+def test_door_zone_uses_the_feet_then_the_middle_of_the_box():
+    doors = [(100, 100, 200, 300)]
+    assert at_door((130, 50, 170, 250), doors)              # feet inside
+    assert at_door((130, 150, 170, 400), doors)             # feet below, middle inside
+    assert not at_door((400, 50, 450, 250), doors)
+
+
+def test_doors_are_matched_to_the_camera_and_scaled():
+    zones = {"G421": {"doors": [[0.1, 0.2, 0.3, 0.4]]}}
+    assert doors_for(zones, "2018.school.G421.r13", (1000, 500)) == [(100, 100, 300, 200)]
+    assert doors_for(zones, "2018.bus.G331.r13", (1000, 500)) == []
+    assert doors_for(None, "G421", (1000, 500)) == []
+
+
+def test_marked_doors_replace_the_frame_edge():
+    doors = [(100, 100, 300, 400)]
+    rules = Rules("cam", NoStore(), frame_size=(640, 480), doors=doors)
+    at_the_door = skeleton(x=200, y=150, knee_drop=0.9)
+    at_the_border = skeleton(x=15, y=150, knee_drop=0.9)
+    for i in range(10):
+        rules.step(i * 0.5, [])
+    for i in range(10, 30):
+        rules.step(i * 0.5, [at_the_border])
+    entered = [e for e in rules.finish() if e.kind == "change" and e.label == "enter"]
+    assert entered == []
+    rules = Rules("cam", NoStore(), frame_size=(640, 480), doors=doors)
+    for i in range(10):
+        rules.step(i * 0.5, [])
+    for i in range(10, 30):
+        rules.step(i * 0.5, [at_the_door])
+    assert [e.label for e in rules.finish() if e.kind == "change"] == ["enter"]
 
 
 def test_two_cameras_must_agree_when_asked():

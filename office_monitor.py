@@ -40,6 +40,7 @@ from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
                                PersonTracker, drop_nested)
 from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
 from office.stitch import IdStitcher, touches_edge
+from office.zones import at_door, doors_for, load_zones
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 HOLD_UNKNOWN_S = 10.0
@@ -83,6 +84,9 @@ def parse_args():
     parser.add_argument("--enter-exit", default="auto", choices=["auto", "edge", "off"],
                         help="report enter / exit at the frame edge; auto is on for videos "
                              "and off for a live camera")
+    parser.add_argument("--zones", type=load_zones, default=None, metavar="YAML",
+                        help="marked doors per camera (see mark_zones.py); used instead of "
+                             "the frame edge for cameras listed in the file")
     parser.add_argument("--frame-size", type=frame_size, default=None, metavar="WxH",
                         help="with --tracks: frame size, for caches that did not record it")
     args = parser.parse_args()
@@ -159,7 +163,8 @@ def run_source(source, name, args, store, out):
     # A person close to a webcam touches the frame border all the time, so the edge rule
     # only means something for a room camera, and auto leaves it off for live cameras.
     use_edges = args.enter_exit == "edge" or (args.enter_exit == "auto" and not live)
-    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None)
+    doors = doors_for(args.zones, name, size) if args.enter_exit != "off" else None
+    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None, doors)
     cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
              if args.save_tracks else None)
     writer = None
@@ -222,12 +227,13 @@ class Rules:
     always give identical events -- otherwise a result tuned on the cache would not be
     the result the live system produces."""
 
-    def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None):
+    def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None, doors=None):
         self.postures = PostureTracker()
         self.activities = ActivityTracker()
         self.changes = PostureChanges()
         self.stitcher = IdStitcher(stitch_gap_s) if stitch_gap_s > 0 else None
-        self.frame_size = frame_size    # None turns enter / exit off
+        self.frame_size = frame_size    # None turns the frame-edge rule off
+        self.doors = doors              # marked doors replace the frame edge entirely
         # Someone in view but unreadable for a few seconds keeps their state: a short
         # blind spot is not a change. Posture only: "no activity" is a real answer, and
         # holding it would stretch every phone call.
@@ -248,8 +254,12 @@ class Rules:
         labels = {p.track_id: self.postures.update(p, t) for p in people}
         doing = {p.track_id: self.activities.update(p, labels[p.track_id], things, t)
                  for p in people}
-        edges = ({p.track_id: touches_edge(p.box, self.frame_size) for p in people}
-                 if self.frame_size else None)
+        if self.doors:
+            edges = {p.track_id: at_door(p.box, self.doors) for p in people}
+        elif self.frame_size:
+            edges = {p.track_id: touches_edge(p.box, self.frame_size) for p in people}
+        else:
+            edges = None
         written = len(self.log.events)
         onsets = {i: self.postures.onset(i) for i in labels}
         for track_id, label in labels.items():
@@ -274,8 +284,10 @@ class Rules:
 
 def replay_source(path, store, args):
     """Rules only, from a cached .npz: no model, no video."""
-    size = None if args.enter_exit == "off" else (cached_frame_size(path) or args.frame_size)
-    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size)
+    known = cached_frame_size(path) or args.frame_size
+    size = None if args.enter_exit == "off" else known
+    doors = doors_for(args.zones, path.stem, known) if known and args.enter_exit != "off" else None
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()

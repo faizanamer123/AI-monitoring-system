@@ -1,0 +1,13 @@
+# Door zones for the MEVA cameras used in testing, marked by eye on one frame of each room.
+# Fractions of the frame: [x1, y1, x2, y2]. Zones include the floor in front of each door.
+G421:   # school cafeteria
+  doors:
+    - [0.10, 0.12, 0.21, 0.33]   # wooden double door, left
+    - [0.36, 0.10, 0.46, 0.33]   # glass door, centre left
+    - [0.47, 0.10, 0.60, 0.40]   # glass door, centre
+    - [0.64, 0.12, 0.83, 0.52]   # large glass door, right
+G331:   # bus station waiting room
+  doors:
+    - [0.24, 0.10, 0.38, 0.38]   # double door, back wall
+    - [0.69, 0.04, 0.77, 0.30]   # back corridor door
+    - [0.93, 0.10, 1.00, 0.45]   # dark door, right
