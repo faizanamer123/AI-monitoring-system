@@ -86,58 +86,6 @@ def classify_frame(person):
     return STANDING if (y2 - y1) / torso >= BOX_STANDING else UNKNOWN
 
 
-class HeadDrop:
-    """Sit-down and stand-up from the shoulders alone, for when the legs are hidden.
-
-    Sitting drops the shoulders by about a thigh's length within a second or two, from
-    any viewing angle, even from behind a chair. The feet must stay put: walking towards
-    a high camera also moves a person down the image.
-    """
-
-    def __init__(self, drop=0.6, before_s=1.5, recent_s=0.4, window_s=2.5, foot_limit=0.5,
-                 cooldown_s=3.0):
-        self.drop = drop
-        self.before_s = before_s
-        self.recent_s = recent_s
-        self.window_s = window_s
-        self.foot_limit = foot_limit
-        self.cooldown_s = cooldown_s
-        self.history = {}
-        self.last_fired = {}
-
-    def update(self, person, t):
-        """Returns ("sit down" or "stand up", when it happened), or None."""
-        kp = person.keypoints
-        shoulders, torso = midpoint(kp, L_SHOULDER, R_SHOULDER), torso_length(kp)
-        if shoulders is None or torso is None:
-            return None
-        x1, _, x2, y2 = person.box
-        history = self.history.setdefault(person.track_id, deque())
-        history.append((t, shoulders[1], (x1 + x2) / 2, y2, torso))
-        while t - history[0][0] > self.window_s:
-            history.popleft()
-        if t - history[0][0] < self.before_s or t - self.last_fired.get(person.track_id, -1e9) < self.cooldown_s:
-            return None
-
-        recent = [h for h in history if t - h[0] <= self.recent_s]
-        earlier = [h for h in history if t - h[0] >= self.before_s]
-        if not recent or not earlier:
-            return None
-        before, now = np.mean(earlier, axis=0), np.mean(recent, axis=0)
-        scale = float(np.median([h[4] for h in history]))
-        if np.hypot(now[2] - before[2], now[3] - before[3]) > self.foot_limit * scale:
-            return None
-        change = (now[1] - before[1]) / scale
-        if abs(change) < self.drop:
-            return None
-        self.last_fired[person.track_id] = t
-        return ("sit down" if change > 0 else "stand up"), float((now[0] + before[0]) / 2)
-
-    def forget(self, track_id):
-        self.history.pop(track_id, None)
-        self.last_fired.pop(track_id, None)
-
-
 class PostureTracker:
     """Per-person history: adds walking, and votes over a window so one bad frame
     doesn't flip the label."""
