@@ -31,9 +31,10 @@ from .perception import Person
 
 
 class TrackWriter:
-    def __init__(self, path, fps):
+    def __init__(self, path, fps, size=(0, 0)):
         self.path = Path(path)
         self.fps = fps
+        self.size = size
         self.t, self.rows, self.things = [], [], []
 
     def add(self, t, people, things=()):
@@ -49,6 +50,7 @@ class TrackWriter:
             self.path,
             t=np.asarray(self.t, np.float64),
             fps=np.float64(self.fps),
+            size=np.asarray(self.size, np.int32),
             frame=np.asarray([i for i, _ in self.rows], np.int32),
             track_id=np.asarray([p.track_id for p in people], np.int32),
             box=np.asarray([p.box for p in people], np.int32).reshape(-1, 4),
@@ -67,6 +69,14 @@ def _group(index, count):
     order = np.argsort(index, kind="stable")
     starts = np.searchsorted(index[order], np.arange(count + 1))
     return [order[starts[i]:starts[i + 1]] for i in range(count)]
+
+
+def cached_frame_size(path):
+    """(width, height), or None for a cache written before the size was recorded."""
+    with np.load(path) as data:
+        if "size" not in data.files or not data["size"].all():
+            return None
+        return tuple(int(v) for v in data["size"])
 
 
 def read_tracks(path):

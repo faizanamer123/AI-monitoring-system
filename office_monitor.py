@@ -32,17 +32,23 @@ from pathlib import Path
 import cv2
 
 from office.activity import ACTIVITIES, ActivityTracker
-from office.cache import TrackWriter, read_tracks
+from office.cache import TrackWriter, cached_frame_size, read_tracks
 from office.events import EventLog, EventStore, summarise
 from office.objects import DEFAULT_WEIGHTS as OBJECT_WEIGHTS
 from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
                                PersonTracker, drop_nested)
 from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
+from office.stitch import IdStitcher, touches_edge
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv"}
 COLORS = {SITTING: (255, 160, 0), STANDING: (0, 200, 0), WALKING: (0, 140, 255),
           UNKNOWN: (160, 160, 160)}
+
+
+def frame_size(text):
+    width, height = text.lower().split("x")
+    return int(width), int(height)
 
 
 def parse_args():
@@ -69,6 +75,12 @@ def parse_args():
                         help="also cache the tracker's output per video here")
     parser.add_argument("--tracks", metavar="DIR",
                         help="skip the model: replay cached tracks from this folder")
+    parser.add_argument("--confirm-s", type=float, default=3.0,
+                        help="ignore a person id until it has existed this long")
+    parser.add_argument("--stitch-gap", type=float, default=5.0,
+                        help="re-join a track lost for up to this many seconds (0 = off)")
+    parser.add_argument("--frame-size", type=frame_size, default=None, metavar="WxH",
+                        help="with --tracks: frame size, for caches that did not record it")
     args = parser.parse_args()
     if args.every < 1:
         parser.error("--every must be at least 1")
@@ -136,8 +148,10 @@ def run_source(source, name, args, store, out):
     tracker = PersonTracker(args.weights, args.conf, args.imgsz, args.device)
     objects = (ObjectDetector(args.object_weights, args.objects, device=args.device)
                if args.objects != "off" else None)
-    rules = Rules(name, store)
-    cache = TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps) if args.save_tracks else None
+    size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+    rules = Rules(name, store, args.confirm_s, args.stitch_gap, size)
+    cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
+             if args.save_tracks else None)
     writer = None
     started = time.perf_counter()
     frame_no = processed = 0
@@ -198,21 +212,31 @@ class Rules:
     always give identical events -- otherwise a result tuned on the cache would not be
     the result the live system produces."""
 
-    def __init__(self, name, store):
+    def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None):
         self.postures = PostureTracker()
         self.activities = ActivityTracker()
-        self.log = EventLog(name)
+        self.stitcher = IdStitcher(stitch_gap_s) if stitch_gap_s > 0 else None
+        self.frame_size = frame_size
+        # a stitched id can return up to stitch_gap_s later, so the log must not have
+        # declared it gone by then
+        lost_after = max(2.0, stitch_gap_s + 0.5)
+        self.log = EventLog(name, lost_after=lost_after, confirm_s=confirm_s)
         # presence is the posture log's job; this one only records what people do
-        self.activity_log = EventLog(name, kind="activity", presence=False)
+        self.activity_log = EventLog(name, kind="activity", presence=False,
+                                     lost_after=lost_after, confirm_s=confirm_s)
         self.store = store
 
     def step(self, t, raw_people, things=()):
         people = drop_nested(raw_people)
+        if self.stitcher is not None:
+            people = self.stitcher.update(people, t)
         labels = {p.track_id: self.postures.update(p, t) for p in people}
         doing = {p.track_id: self.activities.update(p, labels[p.track_id], things, t)
                  for p in people}
+        edges = ({p.track_id: touches_edge(p.box, self.frame_size) for p in people}
+                 if self.frame_size else None)
         self.store.write(self.log.update(t, labels,
-                                        {i: self.postures.onset(i) for i in labels}))
+                                        {i: self.postures.onset(i) for i in labels}, edges))
         self.store.write(self.activity_log.update(t, doing))
         for gone in set(self.postures.history) - set(self.log.tracks):
             self.postures.forget(gone)
@@ -224,9 +248,10 @@ class Rules:
         return sorted(self.log.events + self.activity_log.events, key=lambda e: e.start)
 
 
-def replay_source(path, store):
+def replay_source(path, store, args):
     """Rules only, from a cached .npz: no model, no video."""
-    rules = Rules(path.stem, store)
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap,
+                  cached_frame_size(path) or args.frame_size)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()
@@ -244,7 +269,7 @@ def main():
         store = EventStore(out)
         started = time.perf_counter()
         try:
-            events = [e for path in caches for e in replay_source(path, store)]
+            events = [e for path in caches for e in replay_source(path, store, args)]
         finally:
             store.close()
         print(f"replayed {len(caches)} cached videos in {time.perf_counter() - started:.1f}s")

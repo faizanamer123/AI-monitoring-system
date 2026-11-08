@@ -76,46 +76,73 @@ def ground_truth(recid, label_dir=LABELS):
     return out
 
 
-def detections(rows, max_gap=5.0, settle=1.0):
+def steady(segments, hold, max_gap):
+    """Sorted (start, end, label) -> (start, end, seated?), flicker removed.
+
+    Standing and walking merge into one "upright" state: stand up then walk away is a
+    single change. Stretches shorter than `hold` seconds are then dropped and what they
+    separated is joined, so sit-stand-sit in a few seconds is no change at all.
+    """
+    def join(items):
+        out = []
+        for start, end, seated in items:
+            if out and out[-1][2] == seated and start - out[-1][1] <= max_gap:
+                out[-1] = (out[-1][0], end, seated)
+            else:
+                out.append((start, end, seated))
+        return out
+
+    joined = join([(s, e, label == SEATED) for s, e, label in segments])
+    return join([seg for seg in joined if seg[1] - seg[0] >= hold])
+
+
+def detections(rows, max_gap=5.0, settle=1.0, hold=0.0, edge_only=False):
     """events.csv rows for ONE video -> [(class name, time), ...]
 
     A posture change is timed at the midpoint between the old segment's end and the new
     one's start. Unknown stretches are not logged, so the two need not touch; if they
     are more than max_gap apart we do not know when the change happened and skip it.
     `appeared` within `settle` seconds of the start is someone already in the room.
+    edge_only: only ids that arrive or vanish at the frame border are enter / exit.
     """
     out = []
     by_person = defaultdict(list)
     for r in rows:
         t = float(r["start"])
-        if r["kind"] == "appeared" and t > settle:
+        at_edge = r["label"] == "edge" or not edge_only
+        if r["kind"] == "appeared" and t > settle and at_edge:
             out.append(("enter", t))
-        elif r["kind"] == "left":
+        elif r["kind"] == "left" and at_edge:
             out.append(("exit", t))
         elif r["kind"] == "posture":
             by_person[r["person"]].append((t, float(r["end"]), r["label"]))
     for segments in by_person.values():
-        segments.sort()
-        for (_, prev_end, prev), (start, _, cur) in zip(segments, segments[1:]):
-            if start - prev_end > max_gap:
-                continue
-            when = (prev_end + start) / 2
-            if prev in UPRIGHT and cur == SEATED:
-                out.append(("sit down", when))
-            elif prev == SEATED and cur in UPRIGHT:
-                out.append(("stand up", when))
+        states = steady(sorted(segments), hold, max_gap)
+        for (_, prev_end, prev), (start, _, cur) in zip(states, states[1:]):
+            if start - prev_end <= max_gap and prev != cur:
+                out.append(("sit down" if cur else "stand up", (prev_end + start) / 2))
     return out
 
 
-def merge(dets, window):
-    """Same-class detections closer than `window` seconds become one (the earliest)."""
+def merge(dets, window, min_cameras=1):
+    """Same-class detections closer than `window` seconds become one (the earliest).
+
+    dets may carry a camera as a third field. min_cameras then keeps only groups seen
+    by at least that many different cameras: each camera's false alarms are
+    independent, so any-camera fusion adds them all up, while agreement cancels them.
+    """
     out = []
-    for cls in {c for c, _ in dets}:
-        last = None
-        for t in sorted(t for c, t in dets if c == cls):
-            if last is None or t - last > window:
-                out.append((cls, t))
+    for cls in {d[0] for d in dets}:
+        group, last = [], None
+        for t, camera in sorted((d[1], d[2] if len(d) > 2 else 0) for d in dets if d[0] == cls):
+            if last is not None and t - last > window:
+                if len({c for _, c in group}) >= min_cameras:
+                    out.append((cls, group[0][0]))
+                group = []
+            group.append((t, camera))
             last = t
+        if group and len({c for _, c in group}) >= min_cameras:
+            out.append((cls, group[0][0]))
     return out
 
 
@@ -180,7 +207,7 @@ def score(args):
     missing = len(wanted) - len(seen)
 
     per_camera = {cam: {} for cam in CAMERAS}
-    fused = {}
+    fused, agreed = {}, {}
     for recid in seen:
         truth = ground_truth(recid, args.labels)
         pooled = []
@@ -188,15 +215,17 @@ def score(args):
             # A camera with no rows produced no events -- every labelled event is a
             # miss for it. Skipping it instead silently dropped those misses and
             # flattered the weakest cameras.
-            dets = detections(rows.get((recid, cam), []))
-            pooled += dets
+            dets = detections(rows.get((recid, cam), []), hold=args.hold, edge_only=args.edge_only)
+            pooled += [(cls, t, cam) for cls, t in dets]
             add(per_camera[cam], match(merge(dets, args.collar), truth, args.collar))
         add(fused, match(merge(pooled, args.collar), truth, args.collar))
+        add(agreed, match(merge(pooled, args.collar, min_cameras=2), truth, args.collar))
 
     print(f"{args.split} split: {len(seen)} recordings scored"
           + (f" ({missing} not in the events file)" if missing else "")
           + f", collar +-{args.collar:g} s")
     table("FUSED (any of the four cameras)", fused)
+    table("FUSED (at least two cameras agree)", agreed)
     for cam in CAMERAS:
         if per_camera[cam]:
             table(f"camera {cam}", per_camera[cam])
@@ -228,6 +257,10 @@ def main():
     s.add_argument("events")
     s.add_argument("--split", default="tuning", choices=["tuning", "final", "all"])
     s.add_argument("--collar", type=float, default=2.0)
+    s.add_argument("--hold", type=float, default=0.0,
+                   help="a posture must last this long to count as a change")
+    s.add_argument("--edge-only", action="store_true",
+                   help="enter / exit only for ids born or lost at the frame border")
 
     args = parser.parse_args()
     videos(args) if args.cmd == "videos" else score(args)

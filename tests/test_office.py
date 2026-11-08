@@ -17,6 +17,8 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
                                R_SHOULDER, R_WRIST, Person, drop_nested)
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
+from office.stitch import IdStitcher, touches_edge
+from evaluate_office import detections, merge
 
 
 def skeleton(x=100.0, y=100.0, torso=50.0, knee_drop=None, box_height=None, scale=1.0):
@@ -300,6 +302,80 @@ def test_cache_round_trip_keeps_people_and_objects(tmp_path):
     assert people[0].box == person.box and np.allclose(people[0].keypoints, person.keypoints)
     assert [(t.name, t.box) for t in things] == [("cell phone", (40, 50, 60, 70))]
     assert no_people == [] and no_things == []
+
+
+# --- tuning: confirmation, stitching, edges, steadiness, camera agreement --------------
+
+def test_short_lived_id_writes_nothing():
+    log = EventLog("cam", confirm_s=3.0, lost_after=1.0)
+    run(log, [(t / 10, {1: SITTING}) for t in range(15)] + [(t / 10, {}) for t in range(15, 40)])
+    log.close()
+    assert log.events == []
+
+
+def test_confirmed_id_is_backdated_to_its_first_sighting():
+    log = EventLog("cam", confirm_s=3.0)
+    run(log, [(t / 10, {1: SITTING}) for t in range(50)])
+    assert (log.events[0].kind, log.events[0].start) == ("appeared", 0.0)
+
+
+def test_appearing_at_the_frame_edge_is_recorded():
+    log = EventLog("cam", lost_after=1.0)
+    log.update(0.0, {1: SITTING}, edges={1: True})
+    log.update(1.0, {1: SITTING}, edges={1: False})
+    log.update(3.0, {})
+    presence = [(e.kind, e.label) for e in log.events if e.kind != "posture"]
+    assert presence == [("appeared", "edge"), ("left", "inside")]
+
+
+def test_touches_edge():
+    assert touches_edge((2, 50, 40, 120), (320, 240))
+    assert not touches_edge((100, 50, 140, 120), (320, 240))
+
+
+def test_new_id_in_the_same_place_rejoins_the_lost_one():
+    stitcher = IdStitcher(gap_s=5.0)
+    stitcher.update([box_person(1, (100, 100, 140, 200), 0.9)], 0.0)
+    out = stitcher.update([box_person(7, (104, 102, 144, 202), 0.9)], 3.0)
+    assert [p.track_id for p in out] == [1]
+
+
+def test_new_id_far_away_or_much_later_is_someone_else():
+    stitcher = IdStitcher(gap_s=5.0)
+    stitcher.update([box_person(1, (100, 100, 140, 200), 0.9)], 0.0)
+    assert stitcher.update([box_person(7, (280, 100, 320, 200), 0.9)], 3.0)[0].track_id == 7
+    stitcher = IdStitcher(gap_s=5.0)
+    stitcher.update([box_person(1, (100, 100, 140, 200), 0.9)], 0.0)
+    assert stitcher.update([box_person(7, (100, 100, 140, 200), 0.9)], 9.0)[0].track_id == 7
+
+
+def test_a_person_still_in_view_cannot_be_rejoined():
+    stitcher = IdStitcher(gap_s=5.0)
+    stitcher.update([box_person(1, (100, 100, 140, 200), 0.9)], 0.0)
+    out = stitcher.update([box_person(1, (100, 100, 140, 200), 0.9),
+                           box_person(7, (110, 100, 150, 200), 0.8)], 1.0)
+    assert sorted(p.track_id for p in out) == [1, 7]
+
+
+def posture_rows(*segments):
+    return [{"kind": "posture", "person": "1", "label": label, "start": str(a), "end": str(b)}
+            for a, b, label in segments]
+
+
+def test_a_flicker_of_standing_is_not_a_stand_up():
+    rows = posture_rows((0, 20, SITTING), (20, 21, STANDING), (21, 40, SITTING))
+    assert detections(rows, hold=3.0) == []
+
+
+def test_stand_up_then_walk_away_is_one_change():
+    rows = posture_rows((0, 20, SITTING), (20, 21.5, STANDING), (21.5, 25, WALKING))
+    assert detections(rows, hold=3.0) == [("stand up", 20.0)]
+
+
+def test_two_cameras_must_agree_when_asked():
+    dets = [("sit down", 10.0, "id00"), ("sit down", 11.0, "id02"), ("sit down", 40.0, "id01")]
+    assert merge(dets, 2.0, min_cameras=2) == [("sit down", 10.0)]
+    assert sorted(merge(dets, 2.0)) == [("sit down", 10.0), ("sit down", 40.0)]
 
 
 # --- duplicate boxes ------------------------------------------------------------------

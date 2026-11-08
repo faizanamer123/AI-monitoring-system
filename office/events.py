@@ -44,13 +44,18 @@ class EventLog:
     """Feed update(t, {track_id: label}) once per processed frame, then close(t)."""
 
     def __init__(self, source, lost_after=2.0, min_segment=1.0, hold_unknown=3.0,
-                 kind="posture", presence=True):
+                 kind="posture", presence=True, confirm_s=0.0):
         """kind names the segments this log writes ("posture", "activity"). One person
         has one timeline per kind; only one of them should own presence, or every
-        arrival is logged once per kind."""
+        arrival is logged once per kind.
+
+        confirm_s: an id writes nothing until it has existed this long, then its events
+        are released, backdated. Most ids that die young are a chair or a coat detected
+        for a few frames, and a real person is always around longer than that."""
         self.source = source
         self.kind = kind
         self.presence = presence
+        self.confirm_s = confirm_s
         self.lost_after = lost_after
         self.min_segment = min_segment
         # A seated person whose knees vanish behind the desk for a moment reads as
@@ -60,23 +65,36 @@ class EventLog:
         self.tracks = {}    # id -> {"label", "since", "last_seen", "last_known"}
         self.events = []
 
-    def update(self, t, labels, onsets=None):
+    def update(self, t, labels, onsets=None, edges=None):
         """Returns the events this call closed, for live display.
 
         onsets: optional {id: time} for labels that truly began before `t` (see
         PostureTracker.onset). A new segment is backdated to it, never earlier than
-        the segment it replaces began."""
+        the segment it replaces began.
+
+        edges: optional {id: bool}, is this person touching the frame border. Recorded
+        as the label of appeared / left ("edge" or "inside"): someone walking in arrives
+        at the border, while a person re-detected mid-room did not enter anything."""
         onsets = onsets or {}
+        edges = edges or {}
         before = len(self.events)
         for track_id, label in labels.items():
             track = self.tracks.get(track_id)
             if track is None:
+                track = {"label": label, "since": t, "last_seen": t, "last_known": t,
+                         "first_seen": t, "confirmed": self.confirm_s <= 0, "pending": [],
+                         "at_edge": edges.get(track_id)}
+                self.tracks[track_id] = track
                 if self.presence:
-                    self.events.append(Event(self.source, track_id, "appeared", "", t, t))
-                self.tracks[track_id] = {"label": label, "since": t, "last_seen": t,
-                                         "last_known": t}
+                    self._emit(track, Event(self.source, track_id, "appeared",
+                                            self._place(track), t, t))
                 continue
             track["last_seen"] = t
+            track["at_edge"] = edges.get(track_id)
+            if not track["confirmed"] and t - track["first_seen"] >= self.confirm_s:
+                track["confirmed"] = True
+                self.events += track["pending"]
+                track["pending"] = []
             end = t
             if label == UNKNOWN and track["label"] != UNKNOWN:
                 if t - track["last_known"] <= self.hold_unknown:
@@ -109,8 +127,16 @@ class EventLog:
         # are flicker the smoothing let through; dropping them keeps the timeline
         # readable at the cost of a second's precision at each boundary.
         if track["label"] != UNKNOWN and end - track["since"] >= self.min_segment:
-            self.events.append(Event(self.source, track_id, self.kind, track["label"],
-                                     track["since"], end))
+            self._emit(track, Event(self.source, track_id, self.kind, track["label"],
+                                    track["since"], end))
+
+    def _emit(self, track, event):
+        # an unconfirmed id's events wait; if it dies young they are simply never released
+        (self.events if track["confirmed"] else track["pending"]).append(event)
+
+    @staticmethod
+    def _place(track):
+        return "" if track["at_edge"] is None else ("edge" if track["at_edge"] else "inside")
 
     @staticmethod
     def _segment_end(track):
@@ -121,8 +147,8 @@ class EventLog:
         track = self.tracks.pop(track_id)
         self._close_segment(track_id, track, self._segment_end(track))
         if self.presence:
-            self.events.append(Event(self.source, track_id, "left", "",
-                                     track["last_seen"], track["last_seen"]))
+            self._emit(track, Event(self.source, track_id, "left", self._place(track),
+                                    track["last_seen"], track["last_seen"]))
 
     def active(self):
         """{id: (label, seconds in it so far)} for people currently in view."""
