@@ -188,7 +188,7 @@ def fit(train_paths, epochs, seed, negatives_per_positive):
             loss = loss_fn(model(xb), yb)
             loss.backward()
             optimiser.step()
-            running += float(loss) * len(yb)
+            running += loss.item() * len(yb)
         print(f"epoch {epoch + 1}/{epochs}  loss {running / len(Y):.4f}", flush=True)
     return model
 
