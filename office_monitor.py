@@ -39,6 +39,7 @@ from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
                                PersonTracker, drop_nested)
 from office.posture import POSTURES, SITTING, STANDING, UNKNOWN, WALKING, PostureTracker
+from office.skeleton import SkeletonEvents
 from office.stitch import IdStitcher, touches_edge
 from office.zones import at_door, doors_for, load_zones
 
@@ -87,6 +88,8 @@ def parse_args():
     parser.add_argument("--zones", type=load_zones, default=None, metavar="YAML",
                         help="marked doors per camera (see mark_zones.py); used instead of "
                              "the frame edge for cameras listed in the file")
+    parser.add_argument("--skeleton-model", default=None, metavar="PT",
+                        help="trained model file: use it, not the posture rule, for sit down / stand up")
     parser.add_argument("--frame-size", type=frame_size, default=None, metavar="WxH",
                         help="with --tracks: frame size, for caches that did not record it")
     args = parser.parse_args()
@@ -118,7 +121,7 @@ def blur_face(frame, person):
         frame[y1:y2, x1:x2] = cv2.GaussianBlur(frame[y1:y2, x1:x2], (k, k), 0)
 
 
-def draw(frame, people, labels, activities, things, blur):
+def draw(frame, people, labels, activities, things, blur, flashing=None):
     for thing in things:
         x1, y1, x2, y2 = thing.box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 220, 255), 1)
@@ -138,6 +141,9 @@ def draw(frame, people, labels, activities, things, blur):
         x1, y1, x2, y2 = person.box
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         text = f"P{person.track_id} {label}" + (f" | {activity}" if activity != UNKNOWN else "")
+        if flashing and person.track_id in flashing:
+            cv2.putText(frame, flashing[person.track_id].upper(), (x1, min(y2 + 28, frame.shape[0] - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2, cv2.LINE_AA)
         (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(frame, (x1, y1 - th - 6), (x1 + tw + 4, y1), color, -1)
         cv2.putText(frame, text, (x1 + 2, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
@@ -165,7 +171,8 @@ def run_source(source, name, args, store, out):
     use_edges = args.enter_exit == "edge" or (args.enter_exit == "auto" and not live)
     doors = doors_for(args.zones, name, size) if args.enter_exit != "off" else None
     rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None, doors,
-                  doors_for(args.zones, name, size, "seats"))
+                  doors_for(args.zones, name, size, "seats"),
+                  SkeletonEvents(args.skeleton_model) if args.skeleton_model else None, live)
     cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
              if args.save_tracks else None)
     writer = None
@@ -191,7 +198,8 @@ def run_source(source, name, args, store, out):
             processed += 1
 
             if args.save_video or args.show:
-                frame = draw(frame, people, labels, activities, things, args.blur_faces)
+                flashing = {i: name for i, (name, when) in rules.recent.items() if t - when <= 2.5}
+                frame = draw(frame, people, labels, activities, things, args.blur_faces, flashing)
                 if args.save_video:
                     if writer is None:
                         writer = cv2.VideoWriter(str(out / f"{name}.mp4"),
@@ -229,7 +237,7 @@ class Rules:
     the result the live system produces."""
 
     def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None, doors=None,
-                 seats=None):
+                 seats=None, skeleton=None, announce=False):
         self.postures = PostureTracker()
         self.activities = ActivityTracker()
         self.changes = PostureChanges()
@@ -237,6 +245,9 @@ class Rules:
         self.frame_size = frame_size    # None turns the frame-edge rule off
         self.doors = doors              # marked doors replace the frame edge entirely
         self.seats = seats              # with marked seats, sitting only happens at one
+        self.skeleton = skeleton        # the trained model replaces the posture-change rule
+        self.announce = announce
+        self.recent = {}                # id -> (event, time), to show it on screen
         # Someone in view but unreadable for a few seconds keeps their state: a short
         # blind spot is not a change. Posture only: "no activity" is a real answer, and
         # holding it would stretch every phone call.
@@ -270,9 +281,15 @@ class Rules:
             track_id = person.track_id
             # sitting inferred from stillness counts for the timeline, never as a change
             seen = UNKNOWN if onsets[track_id] is not None else labels[track_id]
-            change = self.changes.update(track_id, seen, t)
+            if self.skeleton is not None:
+                change = self.skeleton.update(person, t)
+            else:
+                change = self.changes.update(track_id, seen, t)
             if change and seated_spot[track_id]:
                 self.log.add_change(track_id, *change)
+                self.recent[track_id] = (change[0], t)
+                if self.announce:
+                    print(f"{t:7.1f}s  P{track_id}  {change[0]}", flush=True)
         self.log.update(t, labels, onsets, edges)
         self.store.write(self.log.events[written:])
         self.store.write(self.activity_log.update(t, doing))
@@ -280,6 +297,9 @@ class Rules:
             self.postures.forget(gone)
             self.activities.forget(gone)
             self.changes.forget(gone)
+            self.recent.pop(gone, None)
+            if self.skeleton is not None:
+                self.skeleton.forget(gone)
         return people, labels, doing
 
     def finish(self):
@@ -293,7 +313,8 @@ def replay_source(path, store, args):
     size = None if args.enter_exit == "off" else known
     doors = doors_for(args.zones, path.stem, known) if known and args.enter_exit != "off" else None
     seats = doors_for(args.zones, path.stem, known, "seats") if known else None
-    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors, seats)
+    skeleton = SkeletonEvents(args.skeleton_model) if args.skeleton_model else None
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors, seats, skeleton)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()

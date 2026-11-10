@@ -6,6 +6,8 @@ cost and has no idea what the room or the clothes look like. The hand-written po
 rules judge one frame's geometry; this judges how the body moves over time.
 """
 
+from collections import deque
+
 import numpy as np
 import torch
 from torch import nn
@@ -80,6 +82,60 @@ class SkeletonTCN(nn.Module):
     def forward(self, x):           # x: (batch, FRAMES, 51)
         x = self.blocks(self.input(x.transpose(1, 2)))
         return self.output(x.mean(dim=2))
+
+
+class SkeletonEvents:
+    """Live sit down / stand up from the trained model, one person at a time.
+
+    The model needs 3 s of movement centred on the event, so a detection arrives about
+    1.5 s after it happened. It looks every `every_s` seconds and will not repeat the same
+    event for a person within `spacing_s`. The 0.95 threshold is the one chosen on MEVA's
+    validation day.
+    """
+
+    def __init__(self, path, threshold=0.95, every_s=0.5, spacing_s=3.0):
+        self.model = SkeletonTCN()
+        self.model.load_state_dict(torch.load(path, map_location="cpu"))
+        self.model.eval()
+        self.threshold = threshold
+        self.every_s = every_s
+        self.spacing_s = spacing_s
+        self.history = {}
+        self.last_check = {}
+        self.last_event = {}
+
+    def update(self, person, t):
+        """Returns ("sit down" or "stand up", when it happened), or None."""
+        track = person.track_id
+        history = self.history.setdefault(track, deque())
+        history.append((t, person.box, person.keypoints))
+        while t - history[0][0] > WINDOW_S + 1.0:
+            history.popleft()
+        if (t - history[0][0] < WINDOW_S
+                or t - self.last_check.get(track, -1e9) < self.every_s):
+            return None
+        self.last_check[track] = t
+
+        centre = t - WINDOW_S / 2
+        times, boxes, keypoints = zip(*history)
+        window = window_features(np.array(times), np.array(boxes, np.float32),
+                                 np.array(keypoints, np.float32), centre)
+        if window is None:
+            return None
+        scores = probabilities(self.model, window[None])[0]
+        best = int(np.argmax(scores[1:])) + 1
+        name = CLASSES[best]
+        if (scores[best] < self.threshold
+                or centre - self.last_event.get((track, name), -1e9) <= self.spacing_s):
+            return None
+        self.last_event[(track, name)] = centre
+        return name, float(centre)
+
+    def forget(self, track_id):
+        self.history.pop(track_id, None)
+        self.last_check.pop(track_id, None)
+        for key in [k for k in self.last_event if k[0] == track_id]:
+            del self.last_event[key]
 
 
 def probabilities(model, windows, batch=512):

@@ -21,7 +21,7 @@ from office.perception import (L_HIP, L_KNEE, L_SHOULDER, L_WRIST, NOSE, R_HIP, 
                                R_SHOULDER, R_WRIST, Person, drop_nested)
 from office.posture import (SITTING, STANDING, UNKNOWN, WALKING, PostureTracker,
                             classify_frame)
-from office.skeleton import CLASSES, FRAMES, SkeletonTCN, window_features
+from office.skeleton import CLASSES, FRAMES, SkeletonEvents, SkeletonTCN, window_features
 from office.stitch import IdStitcher, touches_edge
 from office.zones import at_door, doors_for
 from evaluate_meva import match_segments, read_labels
@@ -612,6 +612,31 @@ def test_meva_events_attach_to_the_overlapping_track(tmp_path):
               9: (times, np.full((3, 4), [600.0, 105.0, 700.0, 305.0]), np.zeros((3, 17, 3)))}
     attached, missed = attach(read_events(labels), read_geom(geom), people)
     assert attached == [("sit down", pytest.approx(10.55), 7)] and missed == 0
+
+
+def saved_model(tmp_path):
+    path = tmp_path / "model.pt"
+    torch.save(SkeletonTCN().state_dict(), path)
+    return path
+
+
+def test_live_skeleton_model_waits_for_a_full_window_then_can_fire(tmp_path):
+    detector = SkeletonEvents(saved_model(tmp_path), threshold=0.0)
+    results = [detector.update(skeleton(knee_drop=0.1), i * 0.1) for i in range(50)]
+    assert not any(results[:29])
+    assert any(results[29:])
+
+
+def test_live_skeleton_model_stays_quiet_below_its_threshold(tmp_path):
+    detector = SkeletonEvents(saved_model(tmp_path), threshold=1.1)
+    assert not any(detector.update(skeleton(knee_drop=0.1), i * 0.1) for i in range(60))
+
+
+def test_skeleton_model_events_reach_the_timeline(tmp_path):
+    rules = Rules("cam", NoStore(), skeleton=SkeletonEvents(saved_model(tmp_path), threshold=0.0))
+    for i in range(60):
+        rules.step(i * 0.1, [skeleton(knee_drop=0.1)])
+    assert any(e.kind == "change" for e in rules.finish())
 
 
 def test_two_cameras_must_agree_when_asked():
