@@ -110,8 +110,11 @@ for number, clip in enumerate(chosen, 1):
     shutil.copy(labelled[clip], LABELS / f"{clip}.activities.yml")
     print(f"downloaded {number}/{len(chosen)} ({time.time() - started:.0f}s)", flush=True)
 
-# every clip's label files, including the test set's, travel with the output
+# Label files travel with the output: every clip's for a training run, only the processed
+# clips' otherwise, or the score would count unprocessed clips' events as missed.
 for clip, path in labelled.items():
+    if not REMAINDER and clip not in chosen:
+        continue
     for kind in ("activities", "geom", "types"):
         source = path.with_name(f"{clip}.{kind}.yml")
         if source.is_file():
