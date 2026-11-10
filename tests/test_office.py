@@ -283,6 +283,30 @@ def test_someone_elses_phone_does_not_count():
     assert classify_activity(person, SITTING, [phone_at(600, 165)]) == UNKNOWN
 
 
+def hand_at(x, y, size=12):
+    return Thing("hand", (x - size, y - size, x + size, y + size), 0.6)
+
+
+@pytest.mark.parametrize("mode, wrist_near, hand_on, expected", [
+    ("off", True, False, USING_PHONE), ("off", False, True, UNKNOWN),
+    ("or", False, True, USING_PHONE), ("or", True, False, USING_PHONE),
+    ("and", True, False, UNKNOWN), ("and", True, True, USING_PHONE),
+    ("hand", True, False, UNKNOWN), ("hand", False, True, USING_PHONE),
+])
+def test_hands_combine_with_wrists_as_set(monkeypatch, mode, wrist_near, hand_on, expected):
+    monkeypatch.setattr("office.activity.HAND_MODE", mode)
+    wrist = (100, 160) if wrist_near else (300, 300)
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[wrist])
+    things = [phone_at(102, 165)] + ([hand_at(104, 168)] if hand_on else [hand_at(20, 20)])
+    assert classify_activity(person, SITTING, things) == expected
+
+
+def test_a_hand_raised_with_the_phone_counts_as_a_call(monkeypatch):
+    monkeypatch.setattr("office.activity.HAND_MODE", "hand")
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[])
+    assert classify_activity(person, SITTING, [phone_at(106, 74), hand_at(108, 78)]) == ON_CALL
+
+
 def test_seated_at_a_laptop_is_working():
     laptop = Thing("laptop", (90, 150, 150, 190), 0.9)
     assert classify_activity(skeleton(knee_drop=0.1), SITTING, [laptop]) == WORKING

@@ -28,6 +28,9 @@ def main():
     parser.add_argument("--remainder", action="store_true",
                         help="process the labelled clips outside the test set, for training")
     parser.add_argument("--objects", default="person", choices=["person", "frame", "off"])
+    parser.add_argument("--hands", action="store_true", help="also run the hand detector")
+    parser.add_argument("--pack", action="store_true",
+                        help="pack the track caches into parts that download reliably")
     parser.add_argument("--name", default="office-monitor-meva", help="Kaggle kernel name")
     args = parser.parse_args()
 
@@ -38,7 +41,9 @@ def main():
               .replace("@@CLIPS@@", str(args.clips))
               .replace("@@HIGHLIGHTS@@", str(args.highlights))
               .replace("@@REMAINDER@@", str(args.remainder))
-              .replace("@@OBJECTS@@", args.objects))
+              .replace("@@OBJECTS@@", args.objects)
+              .replace("@@HANDS@@", str(args.hands))
+              .replace("@@PACK@@", str(args.pack)))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "run.py").write_text(script)

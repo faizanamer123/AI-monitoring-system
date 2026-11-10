@@ -35,6 +35,22 @@ CALL_DIST = 0.4     # phone centre within this many torso lengths of the head
 CALL_HAND = 0.6     # and a wrist raised to within this many of the head
 HOLD_DIST = 0.6     # ... of a wrist
 REACH = 0.5         # computer centre within the person box widened by this fraction
+# How detected hands (office/hands.py) combine with pose wrists as evidence that a phone is
+# held, or raised to the head: "off" (wrists only), "or", "and", or "hand" (hands only).
+HAND_MODE = "off"
+
+
+def _hand_on(phone_box, hand_box, widen=0.2):
+    """Does the phone touch this hand, allowing a little slack around the hand box?"""
+    x1, y1, x2, y2 = hand_box
+    mx, my = (x2 - x1) * widen, (y2 - y1) * widen
+    return not (phone_box[2] < x1 - mx or phone_box[0] > x2 + mx
+                or phone_box[3] < y1 - my or phone_box[1] > y2 + my)
+
+
+def _evidence(by_wrist, by_hand):
+    return {"off": by_wrist, "or": by_wrist or by_hand, "and": by_wrist and by_hand,
+            "hand": by_hand}[HAND_MODE]
 
 
 def _head(kp):
@@ -63,13 +79,17 @@ def classify_activity(person, posture, things):
     head = _head(kp)
     wrists = [kp[i, :2] for i in (L_WRIST, R_WRIST) if kp[i, 2] >= MIN_CONF]
 
+    hands = [t for t in things if t.name == "hand" and _near_person(t.box, person, 0.25)]
     holding = False
     for phone in (t for t in things if t.name == "cell phone" and _near_person(t.box, person, 0.25)):
         where = centre(phone.box)
-        if head is not None and np.linalg.norm(where - head) <= CALL_DIST * scale and any(
-                np.linalg.norm(w - head) <= CALL_HAND * scale for w in wrists):
+        in_hand = any(_hand_on(phone.box, h.box) for h in hands)
+        if head is not None and np.linalg.norm(where - head) <= CALL_DIST * scale and _evidence(
+                any(np.linalg.norm(w - head) <= CALL_HAND * scale for w in wrists),
+                in_hand and any(np.linalg.norm(centre(h.box) - head) <= CALL_HAND * scale
+                                for h in hands)):
             return ON_CALL
-        if any(np.linalg.norm(where - w) <= HOLD_DIST * scale for w in wrists):
+        if _evidence(any(np.linalg.norm(where - w) <= HOLD_DIST * scale for w in wrists), in_hand):
             holding = True
     if holding:
         return USING_PHONE

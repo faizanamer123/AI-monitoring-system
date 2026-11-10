@@ -19,6 +19,10 @@ CODE_B64 = "@@CODE@@"
 CLIPS_PER_CAMERA = @@CLIPS@@
 REMAINDER = @@REMAINDER@@      # True: every clip NOT in the evenly spaced test set
 OBJECTS = "@@OBJECTS@@"
+HANDS = @@HANDS@@              # also run the project's hand detector
+PACK = @@PACK@@                # pack the track caches into parts that download reliably
+HAND_WEIGHTS = ("https://github.com/faizanamer123/AI-monitoring-system/raw/main/"
+                "checkpoints/hand_yolo.pt")
 CAMERAS = ("G421", "G331")
 HIGHLIGHTS = @@HIGHLIGHTS@@
 
@@ -115,8 +119,26 @@ for clip, path in labelled.items():
 
 listing = WORK / "videos.txt"
 listing.write_text("\n".join(map(str, paths)) + "\n")
+hand_args = ""
+if HANDS:
+    (CODE / "hand_yolo.pt").write_bytes(requests.get(HAND_WEIGHTS, timeout=120).content)
+    hand_args = "--hands --hand-weights hand_yolo.pt"
 sh(f"python office_monitor.py --video {listing} --weights yolo11n-pose.pt --objects {OBJECTS} "
-   f"--save-tracks {OUT / 'tracks'} --out {OUT / 'run'}")
+   f"{hand_args} --save-tracks {OUT / 'tracks'} --out {OUT / 'run'}")
+
+if PACK:
+    import hashlib
+    archive = OUT / "tracks.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for path in sorted((OUT / "tracks").glob("*.npz")):
+            tar.add(path, arcname=f"tracks/{path.name}")
+    digest, size = hashlib.sha256(archive.read_bytes()).hexdigest(), archive.stat().st_size
+    subprocess.run(["split", "-b", "150M", "-d", archive.name, f"{archive.name}.part-"],
+                   cwd=OUT, check=True)
+    archive.unlink()
+    parts = sorted(p.name for p in OUT.glob("tracks.tar.gz.part-*"))
+    (OUT / "manifest.txt").write_text(f"{digest}\n{size}\n" + "\n".join(parts) + "\n")
+    print("packed", size, "bytes into", parts, flush=True)
 if REMAINDER:
     print(f"done in {(time.time() - started) / 60:.0f} min", flush=True)
     sys.exit(0)

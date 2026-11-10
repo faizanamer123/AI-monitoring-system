@@ -34,6 +34,8 @@ import cv2
 from office.activity import ACTIVITIES, ActivityTracker
 from office.cache import TrackWriter, cached_frame_size, read_tracks
 from office.events import EventLog, EventStore, PostureChanges, summarise
+from office.hands import DEFAULT_WEIGHTS as HAND_WEIGHTS
+from office.hands import HandFinder
 from office.objects import DEFAULT_WEIGHTS as OBJECT_WEIGHTS
 from office.objects import ObjectDetector
 from office.perception import (DEFAULT_WEIGHTS, L_EAR, NOSE, R_EAR, SKELETON,
@@ -73,6 +75,9 @@ def parse_args():
                         help="object detection for activities: whole frame (720p+ cameras), "
                              "per-person crops (low-resolution cameras), or off")
     parser.add_argument("--object-weights", default=OBJECT_WEIGHTS)
+    parser.add_argument("--hands", action="store_true",
+                        help="also run the hand detector around people with a phone nearby")
+    parser.add_argument("--hand-weights", default=HAND_WEIGHTS)
     parser.add_argument("--limit", type=int, default=None, help="with a folder: first N videos")
     parser.add_argument("--save-tracks", metavar="DIR",
                         help="also cache the tracker's output per video here")
@@ -165,6 +170,7 @@ def run_source(source, name, args, store, out):
     tracker = PersonTracker(args.weights, args.conf, args.imgsz, args.device)
     objects = (ObjectDetector(args.object_weights, args.objects, device=args.device)
                if args.objects != "off" else None)
+    hands = HandFinder(args.hand_weights, device=args.device) if args.hands and objects else None
     size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     # A person close to a webcam touches the frame border all the time, so the edge rule
     # only means something for a room camera, and auto leaves it off for live cameras.
@@ -192,6 +198,8 @@ def run_source(source, name, args, store, out):
 
             raw = tracker.update(frame, dedupe=False)
             things = objects.update(frame, drop_nested(raw), t) if objects else []
+            if hands is not None:
+                things = things + hands.update(frame, drop_nested(raw), things, t)
             if cache is not None:
                 cache.add(t, raw, things)
             people, labels, activities = rules.step(t, raw, things)
