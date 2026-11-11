@@ -30,9 +30,11 @@ __pycache__/
 # Model weights
 # ---------------------------------------------------------------------------
 
-# MediaPipe's hand_landmarker.task (7.5 MB) -- Google's file, downloaded on
-# demand by the setup step in the README.
-models/
+# MediaPipe's hand_landmarker.task (7.5 MB) and yolo11n-pose.pt are public files,
+# downloaded on demand. The skeleton model was trained here and cannot be downloaded,
+# so it is committed (224 KB); see the matching exception after `*.pt` below.
+models/*
+!models/skeleton_tcn.pt
 
 # Training checkpoints. The best model is committed as an exception below so a
 # fresh clone can run the demo without training first; the intermediate and
@@ -71,6 +73,7 @@ yolo_gestures/
 runs/
 *.pt
 !checkpoints/hand_yolo.pt
+!models/skeleton_tcn.pt
 detect_hands_output.jpg
 detect_hands_results/
 video_results/

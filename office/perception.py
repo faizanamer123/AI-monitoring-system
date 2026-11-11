@@ -54,6 +54,10 @@ class PersonTracker:
 
         from detect_hands import yolo_device
 
+        if not Path(weights).is_file():
+            # a fresh clone has no models/ folder: given a bare name, Ultralytics
+            # downloads its own pretrained model
+            weights = Path(weights).name
         self.model = YOLO(weights)
         self.conf = conf
         self.imgsz = imgsz
