@@ -293,18 +293,26 @@ def hand_at(x, y, size=12):
     ("and", True, False, UNKNOWN), ("and", True, True, USING_PHONE),
     ("hand", True, False, UNKNOWN), ("hand", False, True, USING_PHONE),
 ])
-def test_hands_combine_with_wrists_as_set(monkeypatch, mode, wrist_near, hand_on, expected):
-    monkeypatch.setattr("office.activity.HAND_MODE", mode)
+def test_hands_combine_with_wrists_as_set(mode, wrist_near, hand_on, expected):
     wrist = (100, 160) if wrist_near else (300, 300)
     person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[wrist])
     things = [phone_at(102, 165)] + ([hand_at(104, 168)] if hand_on else [hand_at(20, 20)])
-    assert classify_activity(person, SITTING, things) == expected
+    assert classify_activity(person, SITTING, things, mode) == expected
 
 
-def test_a_hand_raised_with_the_phone_counts_as_a_call(monkeypatch):
-    monkeypatch.setattr("office.activity.HAND_MODE", "hand")
+def test_a_hand_raised_with_the_phone_counts_as_a_call():
     person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[])
-    assert classify_activity(person, SITTING, [phone_at(106, 74), hand_at(108, 78)]) == ON_CALL
+    assert classify_activity(person, SITTING, [phone_at(106, 74), hand_at(108, 78)], "hand") == ON_CALL
+
+
+def test_with_the_hand_detector_off_wrists_alone_decide():
+    person = with_head_and_wrists(skeleton(), head=(100, 70), wrists=[(100, 160)])
+    rules = Rules("cam", NoStore())
+    _, _, doing = rules.step(0.0, [person], [phone_at(102, 165)])
+    assert doing[1] == USING_PHONE
+    rules = Rules("cam", NoStore(), hands=True)
+    _, _, doing = rules.step(0.0, [person], [phone_at(102, 165)])
+    assert doing[1] == UNKNOWN                       # a hand is now required too
 
 
 def test_seated_at_a_laptop_is_working():

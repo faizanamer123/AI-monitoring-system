@@ -37,7 +37,11 @@ HOLD_DIST = 0.6     # ... of a wrist
 REACH = 0.5         # computer centre within the person box widened by this fraction
 # How detected hands (office/hands.py) combine with pose wrists as evidence that a phone is
 # held, or raised to the head: "off" (wrists only), "or", "and", or "hand" (hands only).
+# With the hand detector running, "and" is used: on MEVA it cut phone false alarms from
+# 241 to 157 (precision 0.51 -> 0.59, recall 0.53 -> 0.47). Without it there are no hands
+# to require, so wrists alone decide.
 HAND_MODE = "off"
+WITH_HANDS = "and"
 
 
 def _hand_on(phone_box, hand_box, widen=0.2):
@@ -48,9 +52,9 @@ def _hand_on(phone_box, hand_box, widen=0.2):
                 or phone_box[3] < y1 - my or phone_box[1] > y2 + my)
 
 
-def _evidence(by_wrist, by_hand):
+def _evidence(by_wrist, by_hand, mode):
     return {"off": by_wrist, "or": by_wrist or by_hand, "and": by_wrist and by_hand,
-            "hand": by_hand}[HAND_MODE]
+            "hand": by_hand}[mode]
 
 
 def _head(kp):
@@ -72,8 +76,9 @@ def _near_person(box, person, widen):
     return x1 - mx <= cx <= x2 + mx and y1 - my <= cy <= y2 + my
 
 
-def classify_activity(person, posture, things):
+def classify_activity(person, posture, things, hand_mode=None):
     """One frame: on_call / using_phone / working / unknown."""
+    hand_mode = hand_mode or HAND_MODE
     kp = person.keypoints
     scale = _scale(person)
     head = _head(kp)
@@ -87,9 +92,10 @@ def classify_activity(person, posture, things):
         if head is not None and np.linalg.norm(where - head) <= CALL_DIST * scale and _evidence(
                 any(np.linalg.norm(w - head) <= CALL_HAND * scale for w in wrists),
                 in_hand and any(np.linalg.norm(centre(h.box) - head) <= CALL_HAND * scale
-                                for h in hands)):
+                                for h in hands), hand_mode):
             return ON_CALL
-        if _evidence(any(np.linalg.norm(where - w) <= HOLD_DIST * scale for w in wrists), in_hand):
+        if _evidence(any(np.linalg.norm(where - w) <= HOLD_DIST * scale for w in wrists), in_hand,
+                     hand_mode):
             holding = True
     if holding:
         return USING_PHONE
@@ -104,13 +110,14 @@ class ActivityTracker:
     """Per-person vote over a short window, like PostureTracker, so one frame where
     the phone is covered does not end a call."""
 
-    def __init__(self, window_s=1.5):
+    def __init__(self, window_s=1.5, hand_mode=None):
         self.window_s = window_s
+        self.hand_mode = hand_mode
         self.history = {}
 
     def update(self, person, posture, things, t):
         history = self.history.setdefault(person.track_id, deque())
-        history.append((t, classify_activity(person, posture, things)))
+        history.append((t, classify_activity(person, posture, things, self.hand_mode)))
         while history and t - history[0][0] > self.window_s:
             history.popleft()
         votes = [label for _, label in history]

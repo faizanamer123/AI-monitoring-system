@@ -31,7 +31,7 @@ from pathlib import Path
 
 import cv2
 
-from office.activity import ACTIVITIES, ActivityTracker
+from office.activity import ACTIVITIES, WITH_HANDS, ActivityTracker
 from office.cache import TrackWriter, cached_frame_size, read_tracks
 from office.events import EventLog, EventStore, PostureChanges, summarise
 from office.hands import DEFAULT_WEIGHTS as HAND_WEIGHTS
@@ -76,7 +76,9 @@ def parse_args():
                              "per-person crops (low-resolution cameras), or off")
     parser.add_argument("--object-weights", default=OBJECT_WEIGHTS)
     parser.add_argument("--hands", action="store_true",
-                        help="also run the hand detector around people with a phone nearby")
+                        help="also run the hand detector around people with a phone nearby, and "
+                             "require a hand on the phone as well as a wrist (with --tracks: "
+                             "use the hands saved in the cache)")
     parser.add_argument("--hand-weights", default=HAND_WEIGHTS)
     parser.add_argument("--limit", type=int, default=None, help="with a folder: first N videos")
     parser.add_argument("--save-tracks", metavar="DIR",
@@ -178,7 +180,8 @@ def run_source(source, name, args, store, out):
     doors = doors_for(args.zones, name, size) if args.enter_exit != "off" else None
     rules = Rules(name, store, args.confirm_s, args.stitch_gap, size if use_edges else None, doors,
                   doors_for(args.zones, name, size, "seats"),
-                  SkeletonEvents(args.skeleton_model) if args.skeleton_model else None, live)
+                  SkeletonEvents(args.skeleton_model) if args.skeleton_model else None, live,
+                  hands=hands is not None)
     cache = (TrackWriter(Path(args.save_tracks) / f"{name}.npz", fps, size)
              if args.save_tracks else None)
     writer = None
@@ -245,9 +248,9 @@ class Rules:
     the result the live system produces."""
 
     def __init__(self, name, store, confirm_s=0.0, stitch_gap_s=0.0, frame_size=None, doors=None,
-                 seats=None, skeleton=None, announce=False):
+                 seats=None, skeleton=None, announce=False, hands=False):
         self.postures = PostureTracker()
-        self.activities = ActivityTracker()
+        self.activities = ActivityTracker(hand_mode=WITH_HANDS if hands else None)
         self.changes = PostureChanges()
         self.stitcher = IdStitcher(stitch_gap_s) if stitch_gap_s > 0 else None
         self.frame_size = frame_size    # None turns the frame-edge rule off
@@ -322,7 +325,8 @@ def replay_source(path, store, args):
     doors = doors_for(args.zones, path.stem, known) if known and args.enter_exit != "off" else None
     seats = doors_for(args.zones, path.stem, known, "seats") if known else None
     skeleton = SkeletonEvents(args.skeleton_model) if args.skeleton_model else None
-    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors, seats, skeleton)
+    rules = Rules(path.stem, store, args.confirm_s, args.stitch_gap, size, doors, seats, skeleton,
+                  hands=args.hands)
     for t, raw, things in read_tracks(path):
         rules.step(t, raw, things)
     return rules.finish()
